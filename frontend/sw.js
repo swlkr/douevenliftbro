@@ -102,7 +102,7 @@ const LoadWasmApp = (() => {
           [WasmApp, WasmAppStatus, resolveApp, rejectApp] = ExplodedPromise();
 
           // Call exported stop method on old App
-          console.log(value.exports);
+          // console.log(value.exports);
           value.exports.stop();
         }
         // references to old App fall out of scope and should be GC'd
