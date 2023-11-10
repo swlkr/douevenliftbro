@@ -7,15 +7,15 @@ fn main() {
 
 pub fn count(count: i64) -> Markup {
     html! {
-        div data-id="target" { "count:" (count) }
+        div id="counter" { "count:" (count) }
     }
 }
 
 pub fn counter() -> Markup {
     html! {
         (count(0))
-        button hx-post="./;inc" hx-swap="outerHTML" hx-target="[data-id='target']" { "add" }
-        button hx-post="./;dec" hx-swap="outerHTML" hx-target="[data-id='target']" { "subtract" }
+        button hx-get="/frontend/inc" hx-swap="outerHTML" hx-target="#counter" { "add" }
+        button hx-get="/frontend/dec" hx-swap="outerHTML" hx-target="#counter" { "subtract" }
     }
 }
 
@@ -34,8 +34,8 @@ mod frontend {
 
     fn routes() -> Result<Router> {
         let mut router = Router::new();
-        router.insert("/;inc", |_, _r| inc().into())?;
-        router.insert("/;dec", |_, _r| dec().into())?;
+        router.insert("/frontend/inc", |_, _r| inc().into())?;
+        router.insert("/frontend/dec", |_, _r| dec().into())?;
 
         Ok(router)
     }
@@ -57,7 +57,7 @@ mod frontend {
             Ok(r) => r,
             Err(e) => return html! { p { "Failed to build router" (e) } }.into(),
         };
-        let path = request.path().trim_start_matches("/wasm-service");
+        let path = request.path();
         let (handler, params) = match router.at(path) {
             Ok(ok) => (ok.value, ok.params),
             Err(matchit::MatchError::NotFound) => return html! { p { "Not found" } }.into(),
@@ -190,7 +190,7 @@ pub mod backend {
         fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
             f.write_str(match self {
                 Route::Root => "/",
-                Route::FileRequested => "/pub/*file",
+                Route::FileRequested => "/frontend/*file",
             })
         }
     }
@@ -204,12 +204,12 @@ pub mod backend {
     fn head() -> Markup {
         html! {
             head {
-                script src="/pub/htmx.js" {}
-                script src="/pub/json-enc.js" {}
+                script src="/frontend/htmx.js" {}
+                // script src="/json-enc.js" {}
                 script {
                     (maud::PreEscaped(r#"
-                        if ("serviceWorker" in navigator) {
-                          navigator.serviceWorker.register("/pub/sw.js")
+                        if ('serviceWorker' in navigator) {
+                          navigator.serviceWorker.register('/frontend/sw.js', { scope: '/' })
                             .then(reg => {
                               reg.addEventListener('statechange', event => {
                                 console.log("received `statechange` event", { reg, event })
@@ -251,8 +251,8 @@ pub mod backend {
     }
 
     #[derive(rust_embed::RustEmbed)]
-    #[folder = "pub"]
-    #[prefix = "pub/"]
+    #[folder = "frontend"]
+    #[prefix = "frontend/"]
     pub struct Files;
 
     pub struct StaticFile<T>(pub T);

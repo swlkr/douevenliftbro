@@ -33,6 +33,30 @@ const ExplodedPromise = () => {
   return [promise, get, resolve, reject];
 };
 
+/// skewnormal(..) returns a random number from the normal distribution that has
+/// been streched and offset to range from `min` to `max`, skewed with `skew`,
+/// and truncated to `sigma` standard deviations. See https://stackoverflow.com/a/74258559/213246
+const skewnormal = (min, max, skew = 1, sigma = 4) => {
+  /// normal() returns a random number from the standard normal distribution.
+  /// Uses the Box-Muller transform.
+  const normal = () => Math.sqrt(-2.0 * Math.log(Math.random())) * Math.cos(2.0 * Math.PI * Math.random());
+
+  /// normal01(..) returns normally distributed random number, whose range is
+  /// truncated at `sigma` standard deviations and shifted to interval `[0, 1]`.
+  const normal01 = (sigma = 4) => {
+    while (true) {
+      let num = normal() / (sigma * 2.0) + 0.5; // translate to [0, 1]
+      if (0 <= num && num <= 1) return num;     // ok if in range, else resample
+    }
+  };
+
+  var num = normal01(sigma);
+  num = Math.pow(num, skew); // skew
+  num *= max - min; // stretch to fill range
+  num += min; // offset to min
+  return num;
+}
+
 ////**** Service Worker & WebAssembly instance lifecycle management ****////
 
 const appUri = "app.wasm";
@@ -79,7 +103,7 @@ const LoadWasmApp = (() => {
 
           // Call exported stop method on old App
           console.log(value.exports);
-          // value.exports.stop();
+          value.exports.stop();
         }
         // references to old App fall out of scope and should be GC'd
       }
@@ -104,7 +128,7 @@ const LoadWasmApp = (() => {
 
 // Periodically check for new wasm app version, randomizing the check interval
 // per client. Note this will still follow server's cache-control policy.
-// setInterval(() => LoadWasmApp("interval"), 300);
+setInterval(() => LoadWasmApp("interval"), skewnormal(5, 15) * 60 * 1000); // 5-15 min
 
 self.addEventListener("install", (event) => {
   console.log("received service worker lifecycle event: install");
@@ -146,14 +170,16 @@ function writeUtf8ToMemory(app, bytes, start) {
 
 // console.log({ self });
 self.addEventListener("fetch", (event) => {
+  console.log("event", event);
   let url = new URL(event.request.url);
 
   console.log("url", url);
   console.log("event.target.location.origin", event.target.location.origin);
 
-  let shouldOverride = url.origin === event.target.location.origin
-    && !url.pathname.endsWith("sw.js")
-    && !url.pathname.endsWith("app.wasm")
+  let shouldOverride = url.origin === event.target.location.origin && !url.pathname.startsWith('/frontend')
+    // && !url.pathname.endsWith("sw.js")
+    // && !url.pathname.endsWith("app.wasm")
+    // && !url.pathname.endsWith("htmx.js")
     && WasmAppStatus().status === "resolved";
 
   if (DEBUG) console.log("fetch event received", { overriding: shouldOverride, method: event.request.method, url, event })
