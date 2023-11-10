@@ -4,6 +4,29 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-axum = { version = "0.6.20", features = ["macros"] }
+axum = { version = "0.6.20", features = ["macros"], optional = true }
+matchit = { version = "0.7.3", optional = true }
 maud = { version = "0.25.0", features = ["axum"] }
-tokio = { version = "1.34.0", features = ["rt-multi-thread", "macros"] }
+serde = { version = "1.0.192", features = ["derive"] }
+serde_json = "1.0.108"
+tokio = { version = "1.34.0", features = ["rt-multi-thread", "macros"], optional = true }
+rizz = { path = "../rizz", optional = true }
+ulid = { version = "1.1.0", optional = true }
+rust-embed = { version = "8.0.0", features = ["axum"], optional = true }
+mime_guess = { version = "2.0.4", optional = true }
+tracing = { version = "0.1.40", optional = true }
+tracing-subscriber = { version = "0.3.17", optional = true }
+thiserror = { version = "1.0.50" }
+justerror = { version = "1.1.0" }
+
+[features]
+default = []
+frontend = ["matchit"]
+backend = ["tokio", "axum", "rust-embed", "mime_guess", "rizz", "ulid", "tracing", "tracing-subscriber",]
+
+[profile.release]
+lto = true
+panic = "abort"
+opt-level = 'z'
+strip = true
+codegen-units = 1
