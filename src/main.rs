@@ -14,56 +14,69 @@ pub fn count(count: i64) -> Markup {
 pub fn counter() -> Markup {
     html! {
         (count(0))
-        button hx-get="/frontend/inc" hx-swap="outerHTML" hx-target="#counter" { "add" }
-        button hx-get="/frontend/dec" hx-swap="outerHTML" hx-target="#counter" { "subtract" }
+        button hx-get=(Route::Inc) hx-swap="outerHTML" hx-target="#counter" { "add" }
+        button hx-get=(Route::Dec) hx-swap="outerHTML" hx-target="#counter" { "subtract" }
+    }
+}
+
+enum Route {
+    Inc,
+    Dec,
+    NotFound,
+}
+
+impl std::fmt::Display for Route {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Route::Inc => "/frontend/inc",
+            Route::Dec => "/frontend/dec",
+            Route::NotFound => "/frontend/404",
+        })
+    }
+}
+
+impl From<&str> for Route {
+    fn from(value: &str) -> Self {
+        match value {
+            "/frontend/inc" => Route::Inc,
+            "/frontend/dec" => Route::Dec,
+            _ => Route::NotFound,
+        }
     }
 }
 
 #[cfg(feature = "frontend")]
 mod frontend {
-    use crate::{count, html, Markup};
-    use matchit::Params;
+    use crate::{count, html, Markup, Route};
     use serde::{Deserialize, Serialize};
-    use std::sync::{Mutex, MutexGuard, OnceLock};
-
-    type Handler = fn(&Params, &Request) -> String;
-    type Router = matchit::Router<Handler>;
-
+    use std::sync::{Mutex, MutexGuard};
     static COUNTER: Mutex<i64> = Mutex::new(0);
-    static ROUTER: OnceLock<Result<Router>> = OnceLock::new();
 
-    fn routes() -> Result<Router> {
-        let mut router = Router::new();
-        router.insert("/frontend/inc", |_, _r| inc().into())?;
-        router.insert("/frontend/dec", |_, _r| dec().into())?;
-
-        Ok(router)
-    }
-
-    fn dec() -> Markup {
+    fn dec(_request: &Request) -> Markup {
         *(COUNTER.lock().unwrap()) -= 1;
 
         count(*COUNTER.lock().unwrap())
     }
 
-    fn inc() -> Markup {
+    fn inc(_request: &Request) -> Markup {
         *(COUNTER.lock().unwrap()) += 1;
 
         count(*COUNTER.lock().unwrap())
     }
 
-    fn handle_request(request: &Request) -> String {
-        let router = match ROUTER.get_or_init(|| routes()) {
-            Ok(r) => r,
-            Err(e) => return html! { p { "Failed to build router" (e) } }.into(),
+    fn not_found(_request: &Request) -> Markup {
+        html! { "not found" }
+    }
+
+    fn route(request: &Request) -> Markup {
+        let route = Route::from(request.path());
+        let handler = match route {
+            Route::Inc => inc,
+            Route::Dec => dec,
+            Route::NotFound => not_found,
         };
-        let path = request.path();
-        let (handler, params) = match router.at(path) {
-            Ok(ok) => (ok.value, ok.params),
-            Err(matchit::MatchError::NotFound) => return html! { p { "Not found" } }.into(),
-            Err(e) => return html! { p { "Error matching request handler: " (e) } }.into(),
-        };
-        handler(&params, request)
+
+        handler(request)
     }
 
     #[derive(Serialize, Deserialize, Debug)]
@@ -112,7 +125,7 @@ mod frontend {
             String::from("{}")
         };
         rs.response = match serde_json::from_str(&request_string) {
-            Ok(request) => Some(handle_request(&request)),
+            Ok(request) => Some(route(&request).into()),
             Err(_) => Some("Failed to parse request string from service worker js".to_string()),
         };
         0
@@ -144,15 +157,6 @@ mod frontend {
     pub extern "C" fn stop() -> usize {
         0
     }
-
-    #[allow(unused)]
-    #[justerror::Error]
-    #[derive(Clone)]
-    enum Error {
-        RouteInsert(#[from] matchit::InsertError),
-    }
-
-    type Result<T> = std::result::Result<T, Error>;
 }
 
 #[cfg(feature = "backend")]

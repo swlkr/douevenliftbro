@@ -5,7 +5,6 @@ edition = "2021"
 
 [dependencies]
 axum = { version = "0.6.20", features = ["macros"], optional = true }
-matchit = { version = "0.7.3", optional = true }
 maud = { version = "0.25.0", features = ["axum"] }
 serde = { version = "1.0.192", features = ["derive"] }
 serde_json = "1.0.108"
@@ -23,7 +22,7 @@ http = { version = "0.2.9", optional = true }
 
 [features]
 default = []
-frontend = ["matchit", "http-serde", "http"]
+frontend = ["http-serde", "http"]
 backend = ["tokio", "axum", "rust-embed", "mime_guess", "rizz", "ulid", "tracing", "tracing-subscriber"]
 
 [profile.release]

@@ -170,16 +170,13 @@ function writeUtf8ToMemory(app, bytes, start) {
 
 // console.log({ self });
 self.addEventListener("fetch", (event) => {
-  // console.log("event", event);
   let url = new URL(event.request.url);
 
-  console.log("url", url);
-  // console.log("event.target.location.origin", event.target.location.origin);
-
   let shouldOverride = url.origin === event.target.location.origin
-    && !url.pathname.endsWith("sw.js")
-    && !url.pathname.endsWith("app.wasm")
-    && url.pathname !== "/"
+    && url.pathname.startsWith('/frontend')
+    && !url.pathname.endsWith('htmx.js')
+    && !url.pathname.endsWith('sw.js')
+    && !url.pathname.endsWith('app.wasm')
     && WasmAppStatus().status === "resolved";
 
   if (DEBUG) console.log("fetch event received", { overriding: shouldOverride, method: event.request.method, url, event })
