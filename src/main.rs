@@ -7,7 +7,7 @@ fn main() {
 
 pub fn count(count: i64) -> Markup {
     html! {
-        div id="counter" { "count:" (count) }
+        #counter { "count:" (count) }
     }
 }
 
@@ -19,9 +19,13 @@ pub fn counter() -> Markup {
     }
 }
 
+//#[derive(Routes)]
 enum Route {
+    // #[route("/frontend/inc")]
     Inc,
+    // #[route("/frontend/inc")]
     Dec,
+    // #[route("/frontend/404")]
     NotFound,
 }
 
