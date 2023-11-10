@@ -18,11 +18,13 @@ tracing = { version = "0.1.40", optional = true }
 tracing-subscriber = { version = "0.3.17", optional = true }
 thiserror = { version = "1.0.50" }
 justerror = { version = "1.1.0" }
+http-serde = { version = "1.1.3", optional = true }
+http = { version = "0.2.9", optional = true }
 
 [features]
 default = []
-frontend = ["matchit"]
-backend = ["tokio", "axum", "rust-embed", "mime_guess", "rizz", "ulid", "tracing", "tracing-subscriber",]
+frontend = ["matchit", "http-serde", "http"]
+backend = ["tokio", "axum", "rust-embed", "mime_guess", "rizz", "ulid", "tracing", "tracing-subscriber"]
 
 [profile.release]
 lto = true

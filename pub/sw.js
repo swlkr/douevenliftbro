@@ -78,7 +78,8 @@ const LoadWasmApp = (() => {
           [WasmApp, WasmAppStatus, resolveApp, rejectApp] = ExplodedPromise();
 
           // Call exported stop method on old App
-          value.exports.stop();
+          console.log(value.exports);
+          // value.exports.stop();
         }
         // references to old App fall out of scope and should be GC'd
       }
@@ -103,7 +104,7 @@ const LoadWasmApp = (() => {
 
 // Periodically check for new wasm app version, randomizing the check interval
 // per client. Note this will still follow server's cache-control policy.
-setInterval(() => LoadWasmApp("interval"), 300);
+// setInterval(() => LoadWasmApp("interval"), 300);
 
 self.addEventListener("install", (event) => {
   console.log("received service worker lifecycle event: install");
@@ -143,8 +144,12 @@ function writeUtf8ToMemory(app, bytes, start) {
   memory.set(bytes, start);
 }
 
+// console.log({ self });
 self.addEventListener("fetch", (event) => {
   let url = new URL(event.request.url);
+
+  console.log("url", url);
+  console.log("event.target.location.origin", event.target.location.origin);
 
   let shouldOverride = url.origin === event.target.location.origin
     && !url.pathname.endsWith("sw.js")
