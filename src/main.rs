@@ -204,13 +204,12 @@ pub mod backend {
     }
 
     async fn file_requested(uri: Uri) -> impl IntoResponse {
-        let path = uri.path().trim_start_matches('/').to_string();
-        StaticFile(path)
+        StaticFile(uri.path().to_string())
     }
 
     #[derive(rust_embed::RustEmbed)]
     #[folder = "frontend"]
-    #[prefix = "frontend/"]
+    #[prefix = "/frontend/"]
     pub struct Files;
 
     pub struct StaticFile<T>(pub T);

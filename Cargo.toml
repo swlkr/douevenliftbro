@@ -29,6 +29,6 @@ backend = ["tokio", "axum", "rust-embed", "mime_guess", "rizz", "ulid", "tracing
 [profile.release]
 lto = true
 panic = "abort"
-opt-level = 'z'
+opt-level = "z"
 strip = true
 codegen-units = 1
