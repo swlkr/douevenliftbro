@@ -187,6 +187,10 @@ pub mod backend {
                 script src="/frontend/htmx.js" {}
                 script src="/frontend/json-enc.js" {}
                 script src="/frontend/app.js" {}
+                title { "do u even lift bro?" }
+                meta content="text/html;charset=utf-8" http-equiv="Content-Type";
+                meta name="viewport" content="width=device-width, initial-scale=1";
+                meta charset="UTF-8";
             }
         }
     }
