@@ -139,9 +139,10 @@ mod frontend {
 pub mod backend {
     use axum::{
         http::{
-            header::{CACHE_CONTROL, CONTENT_TYPE},
+            header::{CACHE_CONTROL, CONTENT_SECURITY_POLICY, CONTENT_TYPE},
             Uri,
         },
+        middleware::{self, Next},
         response::{IntoResponse, Response},
         routing::get,
         Router, Server,
@@ -165,6 +166,19 @@ pub mod backend {
         Router::new()
             .route(&Route::Root.to_string(), get(root))
             .route(&Route::FileRequested.to_string(), get(file_requested))
+            .layer(middleware::from_fn(csp))
+    }
+
+    async fn csp<B>(request: axum::http::Request<B>, next: Next<B>) -> Response {
+        let mut response = next.run(request).await;
+        response.headers_mut().insert(
+            CONTENT_SECURITY_POLICY,
+            axum::http::HeaderValue::from_static(
+                "default-src 'self'; frame-ancestors 'none'; script-src 'self' 'wasm-unsafe-eval'",
+            ),
+        );
+
+        response
     }
 
     fn static_files() -> Vec<Markup> {
@@ -178,7 +192,7 @@ pub mod backend {
             .map(|uri| {
                 if uri.contains(".js") {
                     html! {
-                        script src=(uri) {}
+                        script defer src=(uri) {}
                     }
                 } else if uri.contains(".css") {
                     html! {
