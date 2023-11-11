@@ -8,15 +8,29 @@ fn main() {
 
 pub fn count(count: i64) -> Markup {
     html! {
-        #counter { "count:" (count) }
+        #(Target::Counter) { "count:" (count) }
+    }
+}
+
+pub fn button(hx: Hx, children: &str) -> Markup {
+    let target = format!("#{}", hx.target);
+    html! {
+        button
+            class="rounded-md bg-indigo-500 text-white hover:bg-indigo-600 px-4 py-2"
+            hx-get=[hx.get]
+            hx-post=[hx.post]
+            hx-swap=(hx.swap)
+            hx-target=(target) {
+            (children)
+        }
     }
 }
 
 pub fn counter() -> Markup {
     html! {
         (count(0))
-        button hx-get=(Route::Inc) hx-swap="outerHTML" hx-target="#counter" { "add" }
-        button hx-get=(Route::Dec) hx-swap="outerHTML" hx-target="#counter" { "subtract" }
+        (button(Hx { get: Some(Route::Inc), swap: Swap::OuterHTML, target: Target::Counter, ..Default::default() }, "add"))
+        (button(Hx { get: Some(Route::Dec), swap: Swap::OuterHTML, target: Target::Counter, ..Default::default() }, "subtract"))
     }
 }
 
@@ -224,7 +238,7 @@ pub mod backend {
             (DOCTYPE)
             html {
                 (head())
-                body {
+                body class="dark:bg-gray-950 dark:text-white" {
                     (counter())
                 }
             }
@@ -303,16 +317,69 @@ pub mod backend {
     type Result<T> = std::result::Result<T, Error>;
 }
 
-#[derive(Routes)]
-enum Route {
+#[derive(Routes, Default)]
+pub enum Route {
     #[route("/")]
     Root,
     #[route("/static/*file")]
     FileRequested,
+    #[default]
     #[route("/404")]
     NotFound,
     #[route("/frontend/inc")]
     Inc,
     #[route("/frontend/dec")]
     Dec,
+}
+
+#[derive(Default)]
+pub enum Target {
+    Counter,
+    #[default]
+    This,
+}
+
+#[derive(Default)]
+pub enum Swap {
+    #[default]
+    InnerHTML,
+    OuterHTML,
+    BeforeBegin,
+    AfterBegin,
+    BeforeEnd,
+    AfterEnd,
+    Delete,
+    None,
+}
+
+impl std::fmt::Display for Swap {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Swap::InnerHTML => "innerHTML",
+            Swap::OuterHTML => "outerHTML",
+            Swap::BeforeBegin => "beforebegin",
+            Swap::AfterBegin => "afterbegin",
+            Swap::BeforeEnd => "beforeend",
+            Swap::AfterEnd => "afterend",
+            Swap::Delete => "delete",
+            Swap::None => "none",
+        })
+    }
+}
+
+#[derive(Default)]
+pub struct Hx {
+    pub get: Option<Route>,
+    pub post: Option<Route>,
+    pub swap: Swap,
+    pub target: Target,
+}
+
+impl std::fmt::Display for Target {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Target::Counter => "counter",
+            Target::This => "this",
+        })
+    }
 }
