@@ -20,20 +20,6 @@ pub fn counter() -> Markup {
     }
 }
 
-#[derive(Routes)]
-enum Route {
-    #[route("/")]
-    Root,
-    #[route("/frontend/*file")]
-    FileRequested,
-    #[route("/frontend/inc")]
-    Inc,
-    #[route("/frontend/dec")]
-    Dec,
-    #[route("/frontend/404")]
-    NotFound,
-}
-
 #[cfg(feature = "frontend")]
 mod frontend {
     use crate::{count, html, Markup, Route};
@@ -181,27 +167,20 @@ pub mod backend {
             .route(&Route::FileRequested.to_string(), get(file_requested))
     }
 
-    fn head() -> Markup {
-        let static_files = StaticFiles::iter()
-            .filter_map(|file| {
-                let path = file.as_ref();
-                if let Some(file) = StaticFiles::get(path) {
-                    Some((path.to_owned(), file))
-                } else {
-                    None
-                }
+    fn static_files() -> Vec<Markup> {
+        StaticFiles::iter()
+            .map(|file| file.to_string())
+            .map(|path| (StaticFiles::get(&path), path))
+            .filter_map(|(maybe_file, path)| match maybe_file {
+                Some(file) => Some(format!("{}?v={}", path, file.metadata.last_modified()?)),
+                None => None,
             })
-            .map(|(path, file)| {
-                let uri = format!(
-                    "{}?v={}",
-                    path,
-                    file.metadata.last_modified().unwrap_or_default()
-                );
-                if path.ends_with(".js") {
+            .map(|uri| {
+                if uri.contains(".js") {
                     html! {
                         script src=(uri) {}
                     }
-                } else if path.ends_with(".css") {
+                } else if uri.contains(".css") {
                     html! {
                         link href=(uri) rel="stylesheet";
                     }
@@ -209,11 +188,13 @@ pub mod backend {
                     html! {}
                 }
             })
-            .collect::<Vec<_>>();
+            .collect::<Vec<_>>()
+    }
 
+    fn head() -> Markup {
         html! {
             head {
-                @for static_file in static_files {
+                @for static_file in static_files() {
                     (static_file)
                 }
                 title { "do u even lift bro?" }
@@ -241,8 +222,8 @@ pub mod backend {
     }
 
     #[derive(rust_embed::RustEmbed)]
-    #[folder = "frontend"]
-    #[prefix = "/frontend/"]
+    #[folder = "static"]
+    #[prefix = "/static/"]
     pub struct StaticFiles;
 
     pub struct StaticFile<T>(pub T);
@@ -306,4 +287,18 @@ pub mod backend {
     }
 
     type Result<T> = std::result::Result<T, Error>;
+}
+
+#[derive(Routes)]
+enum Route {
+    #[route("/")]
+    Root,
+    #[route("/static/*file")]
+    FileRequested,
+    #[route("/404")]
+    NotFound,
+    #[route("/frontend/inc")]
+    Inc,
+    #[route("/frontend/dec")]
+    Dec,
 }

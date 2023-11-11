@@ -1,5 +1,5 @@
 if ('serviceWorker' in navigator) {
-  navigator.serviceWorker.register('/frontend/sw.js', { scope: '/' })
+  navigator.serviceWorker.register('/static/sw.js', { scope: '/' })
     .then(reg => {
       reg.addEventListener('statechange', event => {
         console.log("received `statechange` event", { reg, event })
