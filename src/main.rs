@@ -1,5 +1,6 @@
 use enum_router::Routes;
 use maud::{html, Markup};
+use serde::Deserialize;
 
 fn main() {
     #[cfg(feature = "backend")]
@@ -8,15 +9,15 @@ fn main() {
 
 pub fn count(count: i64) -> Markup {
     html! {
-        #(Target::Counter) { "count:" (count) }
+        div id=(Target::Counter) { "count:" (count) }
     }
 }
 
-pub fn button(hx: Hx, children: &str) -> Markup {
+pub fn button(hx: Hx, class: &str, children: impl std::fmt::Display) -> Markup {
     let target = format!("#{}", hx.target);
     html! {
         button
-            class="rounded-md bg-indigo-500 text-white hover:bg-indigo-600 px-4 py-2"
+            class=(class)
             hx-get=[hx.get]
             hx-post=[hx.post]
             hx-swap=(hx.swap)
@@ -26,20 +27,124 @@ pub fn button(hx: Hx, children: &str) -> Markup {
     }
 }
 
+pub fn rect_button(hx: Hx, children: impl std::fmt::Display) -> Markup {
+    html! {
+        (button(hx, "rounded-md bg-indigo-500 text-white hover:bg-indigo-600 px-4 py-2", children))
+    }
+}
+
 pub fn counter() -> Markup {
     html! {
-        (count(0))
-        (button(Hx { get: Some(Route::Inc), swap: Swap::OuterHTML, target: Target::Counter, ..Default::default() }, "add"))
-        (button(Hx { get: Some(Route::Dec), swap: Swap::OuterHTML, target: Target::Counter, ..Default::default() }, "subtract"))
+        div {
+            (count(0))
+            div class="flex gap-4" {
+                (rect_button(Hx { get: Some(Route::Inc), swap: Swap::OuterHTML, target: Target::Counter, ..Default::default() }, "add"))
+                (rect_button(Hx { get: Some(Route::Dec), swap: Swap::OuterHTML, target: Target::Counter, ..Default::default() }, "subtract"))
+            }
+        }
+    }
+}
+
+pub fn display_value(value: u16) -> Markup {
+    html! {
+        div id=(Target::Display) class="text-6xl" {
+            (value)
+        }
+    }
+}
+
+pub fn display(label: &str, value: u16) -> Markup {
+    html! {
+        div class="border rounded-xl flex justify-between items-end p-4" {
+            div class="text-md" {
+                (label)
+            }
+            (display_value(value))
+        }
+    }
+}
+
+pub fn circle_button(hx: Hx, label: impl std::fmt::Display) -> Markup {
+    html! {
+        (button(hx,"flex rounded-full p-4 border dark:border-white border-slate-600 items-center justify-center border-2 w-20 h-20", label))
+    }
+}
+
+pub fn new_set() -> Markup {
+    html! {
+        div class="flex flex-col gap-8" {
+            (display("reps", 0))
+            div class="grid grid-rows-4 grid-cols-3 gap-4 mx-auto" {
+                @for digit in 1..=9 {
+                    (PushParams { digit })
+                }
+                form {
+                    (circle_button(Hx { post: Some(Route::Pop), swap: Swap::OuterHTML, target: Target::Display, ..Default::default() }, "del"))
+                }
+                (PushParams { digit: 0 })
+                (circle_button(Hx::default(), "ok"))
+            }
+        }
+    }
+}
+
+#[derive(Deserialize)]
+struct PushParams {
+    digit: u16,
+}
+
+impl maud::Render for PushParams {
+    fn render(&self) -> Markup {
+        html! {
+            form {
+                input type="hidden" name="digit" value=(self.digit);
+                (circle_button(Hx { post: Some(Route::Push), swap: Swap::OuterHTML, target: Target::Display, ..Default::default() }, self.digit))
+            }
+        }
     }
 }
 
 #[cfg(feature = "frontend")]
 mod frontend {
-    use crate::{count, html, Markup, Route};
+    use crate::{count, display_value, html, Markup, PushParams, Route};
     use serde::{Deserialize, Serialize};
     use std::sync::{Mutex, MutexGuard};
     static COUNTER: Mutex<i64> = Mutex::new(0);
+    static REPS: Mutex<u16> = Mutex::new(0);
+
+    fn push_digit(value: u16, digit: u16) -> Option<u16> {
+        value.checked_mul(10)?.checked_add(digit)
+    }
+
+    fn pop_digit(value: u16) -> Option<u16> {
+        let rem = value.checked_rem(10)?;
+        value.checked_sub(rem)?.checked_div(10)
+    }
+
+    fn push(request: &Request) -> Markup {
+        let PushParams { digit } = serde_json::from_str::<PushParams>(&request.body)
+            .expect("could not parse value from request body");
+        let reps = *REPS.lock().unwrap();
+
+        match push_digit(reps, digit) {
+            Some(new_reps) => {
+                *REPS.lock().unwrap() = new_reps;
+                display_value(new_reps)
+            }
+            None => display_value(reps),
+        }
+    }
+
+    fn pop(_request: &Request) -> Markup {
+        let reps = *REPS.lock().unwrap();
+        match pop_digit(reps) {
+            Some(new_reps) => {
+                *REPS.lock().unwrap() = new_reps;
+                display_value(new_reps)
+            }
+            None => display_value(reps),
+        }
+    }
 
     fn dec(_request: &Request) -> Markup {
         *(COUNTER.lock().unwrap()) -= 1;
@@ -62,6 +167,8 @@ mod frontend {
         let handler = match route {
             Route::Inc => inc,
             Route::Dec => dec,
+            Route::Push => push,
+            Route::Pop => pop,
             Route::NotFound => not_found,
             _ => not_found,
         };
@@ -163,7 +270,7 @@ pub mod backend {
     };
     use maud::{html, Markup, DOCTYPE};
 
-    use crate::{counter, Route};
+    use crate::{counter, new_set, Route};
 
     #[tokio::main]
     pub async fn main() {
@@ -233,14 +340,21 @@ pub mod backend {
         }
     }
 
+    fn body() -> Markup {
+        html! {
+            body class="dark:bg-gray-950 dark:text-white px-4 lg:px-0 max-w-lg mx-auto" hx-ext="json-enc" {
+                (counter())
+                (new_set())
+            }
+        }
+    }
+
     async fn root() -> Markup {
         html! {
             (DOCTYPE)
             html {
                 (head())
-                body class="dark:bg-gray-950 dark:text-white" {
-                    (counter())
-                }
+                (body())
             }
         }
     }
@@ -330,10 +444,15 @@ pub enum Route {
     Inc,
     #[route("/frontend/dec")]
     Dec,
+    #[route("/frontend/push")]
+    Push,
+    #[route("/frontend/pop")]
+    Pop,
 }
 
 #[derive(Default)]
 pub enum Target {
+    Display,
     Counter,
     #[default]
     This,
@@ -380,6 +499,7 @@ impl std::fmt::Display for Target {
         f.write_str(match self {
             Target::Counter => "counter",
             Target::This => "this",
+            Target::Display => "display",
         })
     }
 }
