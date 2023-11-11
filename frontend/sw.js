@@ -174,9 +174,9 @@ self.addEventListener("fetch", (event) => {
 
   let shouldOverride = url.origin === event.target.location.origin
     && url.pathname.startsWith('/frontend')
-    && !url.pathname.endsWith('htmx.js')
-    && !url.pathname.endsWith('sw.js')
-    && !url.pathname.endsWith('app.wasm')
+    && !url.pathname.endsWith('.js')
+    && !url.pathname.endsWith('.css')
+    && !url.pathname.endsWith('.wasm')
     && WasmAppStatus().status === "resolved";
 
   if (DEBUG) console.log("fetch event received", { overriding: shouldOverride, method: event.request.method, url, event })

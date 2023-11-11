@@ -218,6 +218,7 @@ name = "douevenliftbro"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "enum_router",
  "http",
  "http-serde",
  "justerror",
@@ -232,6 +233,23 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "ulid",
+]
+
+[[package]]
+name = "enum_router"
+version = "0.1.0"
+dependencies = [
+ "enum_router_macro",
+]
+
+[[package]]
+name = "enum_router_macro"
+version = "0.1.0"
+dependencies = [
+ "proc-macro-error",
+ "proc-macro2",
+ "quote",
+ "syn 1.0.109",
 ]
 
 [[package]]

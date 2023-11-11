@@ -1,3 +1,4 @@
+use enum_router::Routes;
 use maud::{html, Markup};
 
 fn main() {
@@ -19,34 +20,18 @@ pub fn counter() -> Markup {
     }
 }
 
-//#[derive(Routes)]
+#[derive(Routes)]
 enum Route {
-    // #[route("/frontend/inc")]
+    #[route("/")]
+    Root,
+    #[route("/frontend/*file")]
+    FileRequested,
+    #[route("/frontend/inc")]
     Inc,
-    // #[route("/frontend/inc")]
+    #[route("/frontend/dec")]
     Dec,
-    // #[route("/frontend/404")]
+    #[route("/frontend/404")]
     NotFound,
-}
-
-impl std::fmt::Display for Route {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(match self {
-            Route::Inc => "/frontend/inc",
-            Route::Dec => "/frontend/dec",
-            Route::NotFound => "/frontend/404",
-        })
-    }
-}
-
-impl From<&str> for Route {
-    fn from(value: &str) -> Self {
-        match value {
-            "/frontend/inc" => Route::Inc,
-            "/frontend/dec" => Route::Dec,
-            _ => Route::NotFound,
-        }
-    }
 }
 
 #[cfg(feature = "frontend")]
@@ -78,6 +63,7 @@ mod frontend {
             Route::Inc => inc,
             Route::Dec => dec,
             Route::NotFound => not_found,
+            _ => not_found,
         };
 
         handler(request)
@@ -176,7 +162,7 @@ pub mod backend {
     };
     use maud::{html, Markup, DOCTYPE};
 
-    use crate::counter;
+    use crate::{counter, Route};
 
     #[tokio::main]
     pub async fn main() {
@@ -189,20 +175,6 @@ pub mod backend {
             .unwrap();
     }
 
-    enum Route {
-        Root,
-        FileRequested,
-    }
-
-    impl std::fmt::Display for Route {
-        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            f.write_str(match self {
-                Route::Root => "/",
-                Route::FileRequested => "/frontend/*file",
-            })
-        }
-    }
-
     fn routes() -> Router {
         Router::new()
             .route(&Route::Root.to_string(), get(root))
@@ -213,30 +185,8 @@ pub mod backend {
         html! {
             head {
                 script src="/frontend/htmx.js" {}
-                // script src="/json-enc.js" {}
-                script {
-                    (maud::PreEscaped(r#"
-                        if ('serviceWorker' in navigator) {
-                          navigator.serviceWorker.register('/frontend/sw.js', { scope: '/' })
-                            .then(reg => {
-                              reg.addEventListener('statechange', event => {
-                                console.log("received `statechange` event", { reg, event })
-                              });
-                              console.log("service worker registered", reg);
-                              setTimeout(() => {
-                                  reg.active.postMessage({ type: 'clientattached' });
-                              }, 100);
-                            }).catch(err => {
-                              console.error("service worker registration failed", err);
-                            });
-                          navigator.serviceWorker.addEventListener('controllerchange', event => {
-                            console.log("received `controllerchange` event", event);
-                          });
-                        } else {
-                          console.error("serviceWorker is missing from `navigator`. Note service workers must be served over https or on localhost");
-                        }
-                    "#))
-                }
+                script src="/frontend/json-enc.js" {}
+                script src="/frontend/app.js" {}
             }
         }
     }
