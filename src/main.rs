@@ -182,11 +182,40 @@ pub mod backend {
     }
 
     fn head() -> Markup {
+        let static_files = StaticFiles::iter()
+            .filter_map(|file| {
+                let path = file.as_ref();
+                if let Some(file) = StaticFiles::get(path) {
+                    Some((path.to_owned(), file))
+                } else {
+                    None
+                }
+            })
+            .map(|(path, file)| {
+                let uri = format!(
+                    "{}?v={}",
+                    path,
+                    file.metadata.last_modified().unwrap_or_default()
+                );
+                if path.ends_with(".js") {
+                    html! {
+                        script src=(uri) {}
+                    }
+                } else if path.ends_with(".css") {
+                    html! {
+                        link href=(uri) rel="stylesheet";
+                    }
+                } else {
+                    html! {}
+                }
+            })
+            .collect::<Vec<_>>();
+
         html! {
             head {
-                script src="/frontend/htmx.js" {}
-                script src="/frontend/json-enc.js" {}
-                script src="/frontend/app.js" {}
+                @for static_file in static_files {
+                    (static_file)
+                }
                 title { "do u even lift bro?" }
                 meta content="text/html;charset=utf-8" http-equiv="Content-Type";
                 meta name="viewport" content="width=device-width, initial-scale=1";
@@ -214,7 +243,7 @@ pub mod backend {
     #[derive(rust_embed::RustEmbed)]
     #[folder = "frontend"]
     #[prefix = "/frontend/"]
-    pub struct Files;
+    pub struct StaticFiles;
 
     pub struct StaticFile<T>(pub T);
 
@@ -228,7 +257,7 @@ pub mod backend {
             if path.ends_with("sw.js") {
                 builder = builder.header("Service-Worker-Allowed", "/");
             }
-            let asset = Files::get(path.as_str()).ok_or(Error::NotFound)?;
+            let asset = StaticFiles::get(path.as_str()).ok_or(Error::NotFound)?;
             let body = axum::body::boxed(axum::body::Full::from(asset.data));
             let mime = mime_guess::from_path(path).first_or_octet_stream();
             let response = builder
