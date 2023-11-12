@@ -7,12 +7,6 @@ fn main() {
     backend::main()
 }
 
-pub fn count(count: i64) -> Markup {
-    html! {
-        div id=(Target::Counter) { "count:" (count) }
-    }
-}
-
 pub fn button(hx: Hx, class: &str, children: impl std::fmt::Display) -> Markup {
     let target = format!("#{}", hx.target);
     html! {
@@ -30,18 +24,6 @@ pub fn button(hx: Hx, class: &str, children: impl std::fmt::Display) -> Markup {
 pub fn rect_button(hx: Hx, children: impl std::fmt::Display) -> Markup {
     html! {
         (button(hx, "rounded-md bg-indigo-500 text-white hover:bg-indigo-600 px-4 py-2", children))
-    }
-}
-
-pub fn counter() -> Markup {
-    html! {
-        div {
-            (count(0))
-            div class="flex gap-4" {
-                (rect_button(Hx { get: Some(Route::Inc), swap: Swap::OuterHTML, target: Target::Counter, ..Default::default() }, "add"))
-                (rect_button(Hx { get: Some(Route::Dec), swap: Swap::OuterHTML, target: Target::Counter, ..Default::default() }, "subtract"))
-            }
-        }
     }
 }
 
@@ -106,10 +88,9 @@ impl maud::Render for PushParams {
 
 #[cfg(feature = "frontend")]
 mod frontend {
-    use crate::{count, display_value, html, Markup, PushParams, Route};
+    use crate::{display_value, html, Markup, PushParams, Route};
     use serde::{Deserialize, Serialize};
     use std::sync::{Mutex, MutexGuard};
-    static COUNTER: Mutex<i64> = Mutex::new(0);
     static REPS: Mutex<u16> = Mutex::new(0);
 
     fn push_digit(value: u16, digit: u16) -> Option<u16> {
@@ -146,18 +127,6 @@ mod frontend {
         }
     }
 
-    fn dec(_request: &Request) -> Markup {
-        *(COUNTER.lock().unwrap()) -= 1;
-
-        count(*COUNTER.lock().unwrap())
-    }
-
-    fn inc(_request: &Request) -> Markup {
-        *(COUNTER.lock().unwrap()) += 1;
-
-        count(*COUNTER.lock().unwrap())
-    }
-
     fn not_found(_request: &Request) -> Markup {
         html! { "not found" }
     }
@@ -165,8 +134,6 @@ mod frontend {
     fn route(request: &Request) -> Markup {
         let route = Route::from(request.path());
         let handler = match route {
-            Route::Inc => inc,
-            Route::Dec => dec,
             Route::Push => push,
             Route::Pop => pop,
             Route::NotFound => not_found,
@@ -258,6 +225,7 @@ mod frontend {
 
 #[cfg(feature = "backend")]
 pub mod backend {
+    use crate::{new_set, Route};
     use axum::{
         http::{
             header::{CACHE_CONTROL, CONTENT_SECURITY_POLICY, CONTENT_TYPE},
@@ -269,8 +237,6 @@ pub mod backend {
         Router, Server,
     };
     use maud::{html, Markup, DOCTYPE};
-
-    use crate::{counter, new_set, Route};
 
     #[tokio::main]
     pub async fn main() {
@@ -343,7 +309,6 @@ pub mod backend {
     fn body() -> Markup {
         html! {
             body class="dark:bg-gray-950 dark:text-white px-4 lg:px-0 max-w-lg mx-auto" hx-ext="json-enc" {
-                (counter())
                 (new_set())
             }
         }
