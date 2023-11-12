@@ -1,6 +1,27 @@
 use enum_router::Routes;
 use maud::{html, Markup};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
+
+#[derive(Routes, Default)]
+pub enum Route {
+    #[route("/")]
+    Root,
+    #[route("/static/*file")]
+    FileRequested,
+    #[default]
+    #[route("/404")]
+    NotFound,
+    #[route("/frontend/inc")]
+    Inc,
+    #[route("/frontend/dec")]
+    Dec,
+    #[route("/frontend/push")]
+    Push,
+    #[route("/frontend/pop")]
+    Pop,
+    #[route("/create-set")]
+    CreateSet,
+}
 
 fn main() {
     #[cfg(feature = "backend")]
@@ -30,6 +51,7 @@ pub fn rect_button(hx: Hx, children: impl std::fmt::Display) -> Markup {
 pub fn display_value(value: u16) -> Markup {
     html! {
         div id=(Target::Display) class="text-6xl" {
+            input type="hidden" name="reps" value=(value);
             (value)
         }
     }
@@ -52,19 +74,55 @@ pub fn circle_button(hx: Hx, label: impl std::fmt::Display) -> Markup {
     }
 }
 
-pub fn new_set() -> Markup {
+pub fn good_job() -> Markup {
     html! {
-        div class="flex flex-col gap-8" {
-            (display("reps", 0))
-            div class="grid grid-rows-4 grid-cols-3 gap-4 mx-auto" {
-                @for digit in 1..=9 {
-                    (PushParams { digit })
+        div class="text-2xl text-center grid place-content-center h-screen" {
+            div class="flex flex-col gap-4" {
+                p { "🎉" }
+                p { "good job" }
+            }
+        }
+    }
+}
+
+#[derive(Default, Debug, Serialize, Deserialize)]
+struct Set {
+    id: String,
+    name: String,
+    reps: u16,
+    weight: u16,
+    started_at: u64,
+    ended_at: u64,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct SetParams {
+    reps: u16,
+}
+
+pub fn new_set() -> Markup {
+    let set = Set {
+        name: "push ups".into(),
+        ..Default::default()
+    };
+
+    html! {
+        form {
+            div class="flex flex-col gap-8" {
+                div class="text-center text-2xl" {
+                    (set.name)
                 }
-                form {
-                    (circle_button(Hx { post: Some(Route::Pop), swap: Swap::OuterHTML, target: Target::Display, ..Default::default() }, "del"))
+                (display("reps", 0))
+                div class="grid grid-rows-4 grid-cols-3 gap-4 mx-auto" {
+                    @for digit in 1..=9 {
+                        (PushParams { digit })
+                    }
+                    form {
+                        (circle_button(Hx { post: Some(Route::Pop), swap: Swap::OuterHTML, target: Target::Display, ..Default::default() }, "del"))
+                    }
+                    (PushParams { digit: 0 })
+                    (circle_button(Hx { post: Some(Route::CreateSet), swap: Swap::InnerHTML, target: Target::Body, ..Default::default() }, "ok"))
                 }
-                (PushParams { digit: 0 })
-                (circle_button(Hx::default(), "ok"))
             }
         }
     }
@@ -106,7 +164,6 @@ mod frontend {
         let PushParams { digit } = serde_json::from_str::<PushParams>(&request.body)
             .expect("could not parse value from request body");
         let reps = *REPS.lock().unwrap();
-
         match push_digit(reps, digit) {
             Some(new_reps) => {
                 *REPS.lock().unwrap() = new_reps;
@@ -136,7 +193,6 @@ mod frontend {
         let handler = match route {
             Route::Push => push,
             Route::Pop => pop,
-            Route::NotFound => not_found,
             _ => not_found,
         };
 
@@ -225,7 +281,7 @@ mod frontend {
 
 #[cfg(feature = "backend")]
 pub mod backend {
-    use crate::{new_set, Route};
+    use crate::{good_job, new_set, Route, SetParams};
     use axum::{
         http::{
             header::{CACHE_CONTROL, CONTENT_SECURITY_POLICY, CONTENT_TYPE},
@@ -233,8 +289,8 @@ pub mod backend {
         },
         middleware::{self, Next},
         response::{IntoResponse, Response},
-        routing::get,
-        Router, Server,
+        routing::{get, post},
+        Json, Router, Server,
     };
     use maud::{html, Markup, DOCTYPE};
 
@@ -252,8 +308,13 @@ pub mod backend {
     fn routes() -> Router {
         Router::new()
             .route(&Route::Root.to_string(), get(root))
+            .route(&Route::CreateSet.to_string(), post(create_set))
             .route(&Route::FileRequested.to_string(), get(file_requested))
             .layer(middleware::from_fn(csp))
+    }
+
+    async fn create_set(Json(_params): Json<SetParams>) -> Markup {
+        good_job()
     }
 
     async fn csp<B>(request: axum::http::Request<B>, next: Next<B>) -> Response {
@@ -308,7 +369,7 @@ pub mod backend {
 
     fn body() -> Markup {
         html! {
-            body class="dark:bg-gray-950 dark:text-white px-4 lg:px-0 max-w-lg mx-auto" hx-ext="json-enc" {
+            body id="body" class="dark:bg-gray-950 dark:text-white px-4 lg:px-0 max-w-lg mx-auto" hx-ext="json-enc" {
                 (new_set())
             }
         }
@@ -396,27 +457,9 @@ pub mod backend {
     type Result<T> = std::result::Result<T, Error>;
 }
 
-#[derive(Routes, Default)]
-pub enum Route {
-    #[route("/")]
-    Root,
-    #[route("/static/*file")]
-    FileRequested,
-    #[default]
-    #[route("/404")]
-    NotFound,
-    #[route("/frontend/inc")]
-    Inc,
-    #[route("/frontend/dec")]
-    Dec,
-    #[route("/frontend/push")]
-    Push,
-    #[route("/frontend/pop")]
-    Pop,
-}
-
 #[derive(Default)]
 pub enum Target {
+    Body,
     Display,
     Counter,
     #[default]
@@ -465,6 +508,7 @@ impl std::fmt::Display for Target {
             Target::Counter => "counter",
             Target::This => "this",
             Target::Display => "display",
+            Target::Body => "body",
         })
     }
 }
