@@ -1,8 +1,10 @@
+#![allow(non_snake_case)]
+
 use enum_router::Routes;
-use maud::{html, Markup};
+use maud::{html, Markup, PreEscaped};
 use serde::{Deserialize, Serialize};
 
-#[derive(Routes, Default)]
+#[derive(Clone, Copy, Routes, Default)]
 pub enum Route {
     #[route("/")]
     Root,
@@ -30,21 +32,24 @@ fn main() {
 
 pub fn button(hx: Hx, class: &str, children: impl std::fmt::Display) -> Markup {
     let target = format!("#{}", hx.target);
+    let get = match hx.get {
+        Route::NotFound => None,
+        _ => Some(hx.get),
+    };
+    let post = match hx.post {
+        Route::NotFound => None,
+        _ => Some(hx.post),
+    };
+
     html! {
         button
             class=(class)
-            hx-get=[hx.get]
-            hx-post=[hx.post]
+            hx-get=[get]
+            hx-post=[post]
             hx-swap=(hx.swap)
             hx-target=(target) {
             (children)
         }
-    }
-}
-
-pub fn rect_button(hx: Hx, children: impl std::fmt::Display) -> Markup {
-    html! {
-        (button(hx, "rounded-md bg-indigo-500 text-white hover:bg-indigo-600 px-4 py-2", children))
     }
 }
 
@@ -68,9 +73,9 @@ pub fn display(label: &str, value: u16) -> Markup {
     }
 }
 
-pub fn circle_button(hx: Hx, label: impl std::fmt::Display) -> Markup {
+pub fn circle_button(hx: Hx, children: impl std::fmt::Display) -> Markup {
     html! {
-        (button(hx,"flex rounded-full p-4 border dark:border-white border-slate-600 items-center justify-center border-2 w-20 h-20", label))
+        (button(hx,"flex rounded-full p-4 border dark:border-white border-slate-600 items-center justify-center border-2 w-20 h-20", children))
     }
 }
 
@@ -117,11 +122,9 @@ pub fn new_set() -> Markup {
                     @for digit in 1..=9 {
                         (PushParams { digit })
                     }
-                    form {
-                        (circle_button(Hx { post: Some(Route::Pop), swap: Swap::OuterHTML, target: Target::Display, ..Default::default() }, "del"))
-                    }
+                    (circle_button(Hx { post: Route::Pop, swap: Swap::OuterHTML, target: Target::Display, ..Default::default() }, "del"))
                     (PushParams { digit: 0 })
-                    (circle_button(Hx { post: Some(Route::CreateSet), swap: Swap::InnerHTML, target: Target::Body, ..Default::default() }, "ok"))
+                    (circle_button(Hx { post: Route::CreateSet, swap: Swap::InnerHTML, target: Target::Body, ..Default::default() }, "ok"))
                 }
             }
         }
@@ -138,7 +141,7 @@ impl maud::Render for PushParams {
         html! {
             form {
                 input type="hidden" name="digit" value=(self.digit);
-                (circle_button(Hx { post: Some(Route::Push), swap: Swap::OuterHTML, target: Target::Display, ..Default::default() }, self.digit))
+                (circle_button(Hx { post: Route::Push, swap: Swap::OuterHTML, target: Target::Display, ..Default::default() }, self.digit))
             }
         }
     }
@@ -457,7 +460,7 @@ pub mod backend {
     type Result<T> = std::result::Result<T, Error>;
 }
 
-#[derive(Default)]
+#[derive(Clone, Copy, Default)]
 pub enum Target {
     Body,
     Display,
@@ -466,7 +469,7 @@ pub enum Target {
     This,
 }
 
-#[derive(Default)]
+#[derive(Clone, Copy, Default)]
 pub enum Swap {
     #[default]
     InnerHTML,
@@ -496,8 +499,8 @@ impl std::fmt::Display for Swap {
 
 #[derive(Default)]
 pub struct Hx {
-    pub get: Option<Route>,
-    pub post: Option<Route>,
+    pub get: Route,
+    pub post: Route,
     pub swap: Swap,
     pub target: Target,
 }
