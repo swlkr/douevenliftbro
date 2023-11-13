@@ -1,0 +1,5 @@
+#!/bin/sh
+
+cargo build --features frontend --release --target wasm32-unknown-unknown && \
+cp target/wasm32-unknown-unknown/release/*.wasm ./static/app.wasm && \
+cargo build --features backend --release
