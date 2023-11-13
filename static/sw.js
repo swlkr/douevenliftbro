@@ -168,15 +168,11 @@ function writeUtf8ToMemory(app, bytes, start) {
   memory.set(bytes, start);
 }
 
-// console.log({ self });
 self.addEventListener("fetch", (event) => {
   let url = new URL(event.request.url);
 
   let shouldOverride = url.origin === event.target.location.origin
     && url.pathname.startsWith('/frontend')
-    // && !url.pathname.endsWith('.js')
-    // && !url.pathname.endsWith('.css')
-    // && !url.pathname.endsWith('.wasm')
     && WasmAppStatus().status === "resolved";
 
   if (DEBUG) console.log("fetch event received", { overriding: shouldOverride, method: event.request.method, url, event })

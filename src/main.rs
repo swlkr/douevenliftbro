@@ -1,8 +1,11 @@
-#![allow(non_snake_case)]
-
 use enum_router::Routes;
-use maud::{html, Markup, PreEscaped};
+use maud::{html, Markup};
 use serde::{Deserialize, Serialize};
+
+fn main() {
+    #[cfg(feature = "backend")]
+    backend::main()
+}
 
 #[derive(Clone, Copy, Routes, Default)]
 pub enum Route {
@@ -25,28 +28,20 @@ pub enum Route {
     CreateSet,
 }
 
-fn main() {
-    #[cfg(feature = "backend")]
-    backend::main()
-}
-
-pub fn button(hx: Hx, class: &str, children: impl std::fmt::Display) -> Markup {
-    let target = format!("#{}", hx.target);
-    let get = match hx.get {
-        Route::NotFound => None,
-        _ => Some(hx.get),
-    };
-    let post = match hx.post {
-        Route::NotFound => None,
-        _ => Some(hx.post),
-    };
+pub fn button(
+    route: Route,
+    swap: Swap,
+    target: Target,
+    class: &str,
+    children: impl std::fmt::Display,
+) -> Markup {
+    let target = format!("#{}", target);
 
     html! {
         button
             class=(class)
-            hx-get=[get]
-            hx-post=[post]
-            hx-swap=(hx.swap)
+            hx-post=(route)
+            hx-swap=(swap)
             hx-target=(target) {
             (children)
         }
@@ -73,13 +68,18 @@ pub fn display(label: &str, value: u16) -> Markup {
     }
 }
 
-pub fn circle_button(hx: Hx, children: impl std::fmt::Display) -> Markup {
+pub fn circle_button(
+    route: Route,
+    swap: Swap,
+    target: Target,
+    children: impl std::fmt::Display,
+) -> Markup {
     html! {
-        (button(hx,"flex rounded-full p-4 border dark:border-white border-slate-600 items-center justify-center border-2 w-20 h-20", children))
+        (button(route, swap, target, "flex rounded-full p-4 border dark:border-white border-slate-600 items-center justify-center border-2 w-20 h-20", children))
     }
 }
 
-pub fn good_job() -> Markup {
+pub fn render_good_job() -> Markup {
     html! {
         div class="text-2xl text-center grid place-content-center h-screen" {
             div class="flex flex-col gap-4" {
@@ -105,7 +105,7 @@ struct SetParams {
     reps: u16,
 }
 
-pub fn new_set() -> Markup {
+pub fn render_set_form() -> Markup {
     let set = Set {
         name: "push ups".into(),
         ..Default::default()
@@ -122,9 +122,9 @@ pub fn new_set() -> Markup {
                     @for digit in 1..=9 {
                         (PushParams { digit })
                     }
-                    (circle_button(Hx { post: Route::Pop, swap: Swap::OuterHTML, target: Target::Display, ..Default::default() }, "del"))
+                    (circle_button(Route::Pop, Swap::OuterHTML, Target::Display, "del"))
                     (PushParams { digit: 0 })
-                    (circle_button(Hx { post: Route::CreateSet, swap: Swap::InnerHTML, target: Target::Body, ..Default::default() }, "ok"))
+                    (circle_button(Route::CreateSet, Swap::InnerHTML, Target::Body, "ok"))
                 }
             }
         }
@@ -141,7 +141,7 @@ impl maud::Render for PushParams {
         html! {
             form {
                 input type="hidden" name="digit" value=(self.digit);
-                (circle_button(Hx { post: Route::Push, swap: Swap::OuterHTML, target: Target::Display, ..Default::default() }, self.digit))
+                (circle_button(Route::Push, Swap::OuterHTML, Target::Display, self.digit))
             }
         }
     }
@@ -284,43 +284,42 @@ mod frontend {
 
 #[cfg(feature = "backend")]
 pub mod backend {
-    use crate::{good_job, new_set, Route, SetParams};
+    use crate::{render_good_job, render_set_form, Route, SetParams};
     use axum::{
+        async_trait,
+        extract::FromRequestParts,
         http::{
             header::{CACHE_CONTROL, CONTENT_SECURITY_POLICY, CONTENT_TYPE},
             Uri,
         },
         middleware::{self, Next},
         response::{IntoResponse, Response},
-        routing::{get, post},
+        routing::{get, post, IntoMakeService},
         Json, Router, Server,
     };
     use maud::{html, Markup, DOCTYPE};
 
     #[tokio::main]
     pub async fn main() {
-        let app = routes();
         let addr = "127.0.0.1:9006".parse().unwrap();
         println!("Listening on localhost:9006");
-        Server::bind(&addr)
-            .serve(app.into_make_service())
-            .await
-            .unwrap();
+        Server::bind(&addr).serve(routes()).await.unwrap();
     }
 
-    fn routes() -> Router {
+    fn routes() -> IntoMakeService<Router> {
         Router::new()
-            .route(&Route::Root.to_string(), get(root))
-            .route(&Route::CreateSet.to_string(), post(create_set))
-            .route(&Route::FileRequested.to_string(), get(file_requested))
-            .layer(middleware::from_fn(csp))
+            .route(&Route::Root.to_string(), get(route_to_root))
+            .route(&Route::CreateSet.to_string(), post(route_to_create_set))
+            .route(&Route::FileRequested.to_string(), get(route_to_static_file))
+            .layer(middleware::from_fn(csp_middleware))
+            .into_make_service()
     }
 
-    async fn create_set(Json(_params): Json<SetParams>) -> Markup {
-        good_job()
+    async fn route_to_create_set(Json(_params): Json<SetParams>) -> Markup {
+        render_good_job()
     }
 
-    async fn csp<B>(request: axum::http::Request<B>, next: Next<B>) -> Response {
+    async fn csp_middleware<B>(request: axum::http::Request<B>, next: Next<B>) -> Response {
         let mut response = next.run(request).await;
         response.headers_mut().insert(
             CONTENT_SECURITY_POLICY,
@@ -332,7 +331,7 @@ pub mod backend {
         response
     }
 
-    fn static_files() -> Vec<Markup> {
+    fn read_static_files_from_fs() -> Vec<Markup> {
         StaticFiles::iter()
             .map(|file| file.to_string())
             .map(|path| (StaticFiles::get(&path), path))
@@ -342,13 +341,9 @@ pub mod backend {
             })
             .map(|uri| {
                 if uri.contains(".js") {
-                    html! {
-                        script defer src=(uri) {}
-                    }
+                    html! { script defer src=(uri) {} }
                 } else if uri.contains(".css") {
-                    html! {
-                        link href=(uri) rel="stylesheet";
-                    }
+                    html! { link href=(uri) rel="stylesheet"; }
                 } else {
                     html! {}
                 }
@@ -359,7 +354,7 @@ pub mod backend {
     fn head() -> Markup {
         html! {
             head {
-                @for static_file in static_files() {
+                @for static_file in read_static_files_from_fs() {
                     (static_file)
                 }
                 title { "do u even lift bro?" }
@@ -370,25 +365,17 @@ pub mod backend {
         }
     }
 
-    fn body() -> Markup {
+    fn body(children: Markup) -> Markup {
         html! {
-            body id="body" class="dark:bg-gray-950 dark:text-white px-4 lg:px-0 max-w-lg mx-auto" hx-ext="json-enc" {
-                (new_set())
-            }
+            body id="body" class="dark:bg-gray-950 dark:text-white px-4 lg:px-0 max-w-lg mx-auto" hx-ext="json-enc" { (children) }
         }
     }
 
-    async fn root() -> Markup {
-        html! {
-            (DOCTYPE)
-            html {
-                (head())
-                (body())
-            }
-        }
+    async fn route_to_root(cx: Context) -> Markup {
+        cx.render(render_set_form())
     }
 
-    async fn file_requested(uri: Uri) -> impl IntoResponse {
+    async fn route_to_static_file(uri: Uri) -> impl IntoResponse {
         StaticFile(uri.path().to_string())
     }
 
@@ -458,6 +445,37 @@ pub mod backend {
     }
 
     type Result<T> = std::result::Result<T, Error>;
+
+    #[derive(Clone, Debug)]
+    struct Context {}
+
+    impl Context {
+        fn render(&self, children: Markup) -> Markup {
+            html! {
+                (DOCTYPE)
+                html {
+                    (head())
+                    (body(children))
+                }
+            }
+        }
+    }
+
+    #[async_trait]
+    impl<S> FromRequestParts<S> for Context
+    where
+        // AppState: FromRef<S>,
+        S: Send + Sync,
+    {
+        type Rejection = Error;
+
+        async fn from_request_parts(
+            _parts: &mut axum::http::request::Parts,
+            _state: &S,
+        ) -> std::result::Result<Self, Self::Rejection> {
+            Ok(Self {})
+        }
+    }
 }
 
 #[derive(Clone, Copy, Default)]
