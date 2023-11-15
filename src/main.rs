@@ -297,19 +297,15 @@ mod frontend {
 #[cfg(feature = "backend")]
 pub mod backend {
     use crate::{
-        button, db, index_component, set_list_component, Error, Exercise, Result, Route, Set,
-        SetParams, Swap, Target,
+        button, db, index_component, set_list_component, Error, Exercise, Route, Set, SetParams,
+        Swap, Target,
     };
-    use axum::extract::rejection::TypedHeaderRejection;
-    use axum::extract::{FromRef, State};
-    use axum::headers::Header;
-    use axum::http::header::{HeaderName, HeaderValue, SET_COOKIE};
     use axum::{
         async_trait,
-        extract::FromRequestParts,
+        extract::{rejection::TypedHeaderRejection, FromRef, FromRequestParts, State},
         headers::Cookie,
         http::{
-            header::{CACHE_CONTROL, CONTENT_SECURITY_POLICY, CONTENT_TYPE},
+            header::{CACHE_CONTROL, CONTENT_SECURITY_POLICY, CONTENT_TYPE, SET_COOKIE},
             Uri,
         },
         middleware::{self, Next},
@@ -329,13 +325,13 @@ pub mod backend {
 
     #[tokio::main]
     pub async fn main() -> Result<()> {
-        let connection = Connection::new("db.sqlite3")
+        let db = Connection::new("db.sqlite3")
             .create_if_missing(true)
             .journal_mode(JournalMode::Wal)
             .foreign_keys(true)
             .open()
-            .await?;
-        let db = connection.database();
+            .await?
+            .database();
         let users = Users::new();
         let sessions = Sessions::new();
         let sets = Sets::new();
@@ -348,7 +344,6 @@ pub mod backend {
             sets,
             exercises,
             user: None,
-            is_htmx_request: false,
         };
 
         let _ = vb.migrate().await?;
@@ -436,7 +431,7 @@ pub mod backend {
         response
     }
 
-    fn read_static_files_from_fs() -> Vec<Markup> {
+    fn static_files() -> Vec<Markup> {
         StaticFiles::iter()
             .map(|file| file.to_string())
             .map(|path| (StaticFiles::get(&path), path))
@@ -459,7 +454,7 @@ pub mod backend {
     fn head() -> Markup {
         html! {
             head {
-                @for static_file in read_static_files_from_fs() {
+                @for static_file in static_files() {
                     (static_file)
                 }
                 title { "do u even lift bro?" }
@@ -789,36 +784,6 @@ pub mod backend {
         sets: Sets,
         exercises: Exercises,
         user: Option<User>,
-        is_htmx_request: bool,
-    }
-
-    #[derive(Eq, PartialEq, Clone, Hash)]
-    struct HxRequest(String);
-
-    static HX_REQUEST: HeaderName = HeaderName::from_static("hx-request");
-
-    impl Header for HxRequest {
-        fn name() -> &'static HeaderName {
-            &HX_REQUEST
-        }
-
-        fn decode<'i, I>(values: &mut I) -> std::result::Result<Self, axum::headers::Error>
-        where
-            Self: Sized,
-            I: Iterator<Item = &'i axum::http::HeaderValue>,
-        {
-            values
-                .next()
-                .and_then(|v| v.to_str().ok())
-                .map(|it| HxRequest(it.to_string()))
-                .ok_or(axum::headers::Error::invalid())
-        }
-
-        fn encode<E: Extend<axum::http::HeaderValue>>(&self, values: &mut E) {
-            let bytes = self.0.as_str().as_bytes();
-            let val = HeaderValue::from_bytes(bytes).expect("Hx-Request is a valid HeaderValue");
-            values.extend(::std::iter::once(val))
-        }
     }
 
     #[async_trait]
@@ -838,9 +803,6 @@ pub mod backend {
                 .map_err(|_| Error::NotFound)?;
             let user = MaybeUser::from_request_parts(parts, state).await?;
             vibe.user = user.0;
-
-            let maybe_hx_request = TypedHeader::<HxRequest>::from_request_parts(parts, state).await;
-            vibe.is_htmx_request = maybe_hx_request.is_ok();
 
             Ok(vibe)
         }
@@ -1133,6 +1095,8 @@ pub mod backend {
             Error::InvalidHeader(value.to_string())
         }
     }
+
+    type Result<T> = std::result::Result<T, Error>;
 }
 
 #[derive(Serialize, Deserialize, Default)]
@@ -1213,8 +1177,6 @@ pub enum Error {
     Database(String),
     InvalidHeader(String),
 }
-
-type Result<T> = std::result::Result<T, Error>;
 
 #[derive(Default, Serialize, Deserialize)]
 pub struct Exercise {
