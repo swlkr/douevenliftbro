@@ -10,41 +10,6 @@ fn main() {
     }
 }
 
-#[derive(Clone, Copy, Routes, Default)]
-pub enum Route {
-    #[route("/")]
-    Index,
-    #[route("/signup")]
-    Signup,
-    #[route("/create-first-set")]
-    CreateFirstSet,
-    #[route("/profile")]
-    Profile,
-    #[route("/login")]
-    Login,
-    #[route("/logout")]
-    Logout,
-    #[route("/search-sets")]
-    SearchExercises,
-    #[route("/static/*file")]
-    File,
-    #[default]
-    #[route("/404")]
-    NotFound,
-    #[route("/frontend/inc")]
-    Inc,
-    #[route("/frontend/dec")]
-    Dec,
-    #[route("/frontend/push")]
-    Push,
-    #[route("/frontend/pop")]
-    Pop,
-    #[route("/create-set")]
-    CreateSet,
-    #[route("/sets")]
-    SetList,
-}
-
 pub fn button(
     route: Route,
     swap: Swap,
@@ -96,28 +61,7 @@ pub fn circle_button(
     }
 }
 
-pub fn set_list_component(sets: &Vec<Set>) -> Markup {
-    html! {
-        div class="text-2xl text-center h-screen" {
-            div class="flex flex-col gap-4 divide divide-y dark:divide-gray-700" {
-                @for set in sets {
-                    div class="flex gap-4" {
-                        p { (set.name) }
-                        p { (set.reps) " reps" }
-                    }
-                }
-            }
-        }
-    }
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-struct SetParams {
-    reps: u16,
-    exercise_id: String,
-}
-
-pub fn index_component(is_logged_in: bool, ex: Exercise) -> Markup {
+pub fn new_set_component(is_logged_in: bool, ex: Exercise) -> Markup {
     html! {
         form {
             input type="hidden" name="exercise_id" value=(ex.id);
@@ -141,6 +85,27 @@ pub fn index_component(is_logged_in: bool, ex: Exercise) -> Markup {
             }
         }
     }
+}
+
+pub fn sets_component(sets: &Vec<Set>) -> Markup {
+    html! {
+        div class="text-2xl text-center h-screen" {
+            div class="flex flex-col gap-4 divide divide-y dark:divide-gray-700" {
+                @for set in sets {
+                    div class="flex gap-4" {
+                        p { (set.name) }
+                        p { (set.reps) " reps" }
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct SetParams {
+    reps: u16,
+    exercise_id: String,
 }
 
 #[derive(Deserialize)]
@@ -297,7 +262,7 @@ mod frontend {
 #[cfg(feature = "backend")]
 pub mod backend {
     use crate::{
-        button, db, index_component, set_list_component, Error, Exercise, Route, Set, SetParams,
+        button, db, new_set_component, sets_component, Error, Exercise, Route, Set, SetParams,
         Swap, Target,
     };
     use axum::{
@@ -309,13 +274,13 @@ pub mod backend {
             Uri,
         },
         middleware::{self, Next},
-        response::{AppendHeaders, IntoResponse, Response},
+        response::{AppendHeaders, IntoResponse},
         routing::{get, post, IntoMakeService},
         Json, Router, Server, TypedHeader,
     };
     use maud::{html, Markup, DOCTYPE};
-    use rizz::{desc, eq, r#in, Connection, Database, Integer, JournalMode, Table, Text};
-    use serde::{Deserialize, Serialize};
+    use rizz::{asc, desc, eq, r#in, Connection, Integer, JournalMode, Table, Text};
+    use serde::{de::DeserializeOwned, Deserialize, Serialize};
 
     macro_rules! id {
         () => {{
@@ -325,6 +290,9 @@ pub mod backend {
 
     #[tokio::main]
     pub async fn main() -> Result<()> {
+        tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::INFO)
+            .init();
         let db = Connection::new("db.sqlite3")
             .create_if_missing(true)
             .journal_mode(JournalMode::Wal)
@@ -332,21 +300,9 @@ pub mod backend {
             .open()
             .await?
             .database();
-        let users = Users::new();
-        let sessions = Sessions::new();
-        let sets = Sets::new();
-        let exercises = Exercises::new();
-
-        let vb = Vibe {
-            db,
-            users,
-            sessions,
-            sets,
-            exercises,
-            user: None,
-        };
-
-        let _ = vb.migrate().await?;
+        let db = Database::new(db);
+        let _ = db.migrate().await?;
+        let vb = Vibe { db, user: None };
 
         let addr = "127.0.0.1:9006".parse().unwrap();
         println!("Listening on localhost:9006");
@@ -359,7 +315,7 @@ pub mod backend {
             .route(Route::File.into(), get(static_file_response))
             .route(Route::Index.into(), get(index_response))
             .route(Route::Logout.into(), post(logout_response))
-            .route(Route::SetList.into(), get(set_list_response))
+            .route(Route::Sets.into(), get(sets_response))
             .route(
                 Route::CreateFirstSet.into(),
                 post(create_first_set_response),
@@ -372,8 +328,10 @@ pub mod backend {
                 Route::Login.into(),
                 get(login_form_response).post(login_response),
             )
+            .route(Route::NewSet.into(), post(new_set_response))
             .route(Route::CreateSet.into(), post(create_set_response))
             .route(Route::Profile.into(), get(profile_response))
+            .route(Route::Exercises.into(), get(exercises_response))
             .layer(middleware::from_fn(csp_middleware))
             .with_state(vb)
             .into_make_service()
@@ -383,43 +341,73 @@ pub mod backend {
         vibe.render(profile_component(user))
     }
 
+    async fn exercises_response(vibe: Vibe, db: Database) -> Result<impl IntoResponse> {
+        let exercises = db.exercises().await?;
+        vibe.render(exercises_component(exercises))
+    }
+
+    #[derive(Deserialize, Serialize)]
+    struct NewSetParams {
+        exercise_id: String,
+    }
+
+    #[axum::debug_handler]
+    async fn new_set_response(
+        State(_): State<Vibe>,
+        vb: Vibe,
+        _user: User,
+        db: Database,
+        Json(params): Json<NewSetParams>,
+    ) -> Result<impl IntoResponse> {
+        let ex: Exercise = db.exercise_by_id(params.exercise_id).await?;
+        vb.render(new_set_component(true, ex))
+    }
+
     async fn create_set_response(
         vb: Vibe,
+        db: Database,
         user: User,
         Json(params): Json<SetParams>,
     ) -> Result<impl IntoResponse> {
-        let Vibe { db, sets, .. } = &vb;
-        let _set = db
-            .insert(*sets)
-            .values(db::Set {
-                id: id!(),
-                user_id: user.id.clone(),
-                exercise_id: params.exercise_id,
-                reps: params.reps,
-                weight: 0,
-                created_at: now(),
-            })?
-            .returning::<db::Set>()
+        let _set: Set = db
+            .insert(
+                db::Set {
+                    id: id!(),
+                    user_id: user.id.clone(),
+                    exercise_id: params.exercise_id,
+                    reps: params.reps,
+                    weight: 0,
+                    created_at: now(),
+                }
+                .into(),
+            )
             .await?;
 
-        let sets = &vb.sets_for_user(user).await?;
+        let sets = db.sets_for_user(user).await?;
 
         Ok((
-            AppendHeaders([("Hx-Push-Url", Route::SetList.to_string())]),
-            vb.render(set_list_component(sets)),
+            AppendHeaders([("Hx-Push-Url", Route::Sets.to_string())]),
+            vb.render(sets_component(&sets)),
         ))
     }
 
-    fn render_signup_form() -> Markup {
+    fn signup_form_component(reps: u16) -> Markup {
         html! {
             div class="flex flex-col pt-4 px-4 lg:px-0 max-w-sm mx-auto" {
-                (rect_button(Route::Signup, Swap::InnerHTML, Target::Body, "track your workout right now"))
+                form {
+                    input type="hidden" name="exercise_id" value="";
+                    input type="hidden" name="reps" value=(reps);
+                    (rect_button(Route::Signup, Swap::InnerHTML, Target::Body, "track your workout right now"))
+                }
                 (link(Route::Login, Swap::InnerHTML, Target::Body, "click here if you already have an account"))
             }
         }
     }
 
-    async fn csp_middleware<B>(request: axum::http::Request<B>, next: Next<B>) -> Response {
+    async fn csp_middleware<B>(
+        request: axum::http::Request<B>,
+        next: Next<B>,
+    ) -> axum::response::Response {
         let mut response = next.run(request).await;
         response.headers_mut().insert(
             CONTENT_SECURITY_POLICY,
@@ -468,10 +456,12 @@ pub mod backend {
     fn nav(user: Option<&User>) -> Markup {
         html! {
             div class="text-2xl py-4 mb-4 bg-indigo-500 text-white text-center flex justify-center gap-4 max-w-md" {
-                (nav_link(Route::Index, Swap::InnerHTML, Target::Body, "/"))
+                (nav_link(Route::Index, Swap::InnerHTML, Target::Body, "home"))
                 @if let None = user {
                     (nav_link(Route::Signup, Swap::InnerHTML, Target::Body, "signup"))
                 } @else {
+                    (nav_link(Route::Exercises, Swap::InnerHTML, Target::Body, "add set"))
+                    (nav_link(Route::Sets, Swap::InnerHTML, Target::Body, "sets"))
                     (nav_button(Route::Logout, Swap::InnerHTML, Target::Body, "logout"))
                 }
             }
@@ -487,54 +477,34 @@ pub mod backend {
         }
     }
 
-    async fn logout_response(vibe: Vibe) -> Result<impl IntoResponse> {
-        let Vibe { db, exercises, .. } = vibe;
-        let pushups = db
-            .select()
-            .from(exercises)
-            .r#where(eq(exercises.name, "standard push-ups"))
-            .first::<Exercise>()
-            .await?;
+    async fn logout_response(vb: Vibe, db: Database) -> Result<impl IntoResponse> {
+        let pushups = db.exercise_by_name("standard push-ups").await?;
+
         Ok((
             AppendHeaders([(
                 SET_COOKIE,
                 format!("id=; HttpOnly; Max-Age=34560000; SameSite=Strict; Secure; Path=/",),
             )]),
-            index_component(false, pushups),
+            vb.render(new_set_component(false, pushups)),
         ))
     }
 
-    async fn set_list_response(vibe: Vibe, user: User) -> Result<impl IntoResponse> {
-        let sets = vibe.sets_for_user(user).await?;
-        vibe.render(set_list_component(&sets))
+    async fn sets_response(vb: Vibe, db: Database, user: User) -> Result<impl IntoResponse> {
+        let sets = db.sets_for_user(user).await?;
+        vb.render(sets_component(&sets))
     }
 
-    async fn index_response(State(_): State<Vibe>, vb: Vibe) -> Result<impl IntoResponse> {
-        let Vibe {
-            ref db, exercises, ..
-        } = vb;
-        let pushups = db
-            .select()
-            .from(exercises)
-            .r#where(eq(exercises.name, "standard push-ups"))
-            .first::<Exercise>()
-            .await?;
+    async fn index_response(vb: Vibe, db: Database) -> Result<impl IntoResponse> {
+        let pushups = db.exercise_by_name("standard push-ups").await?;
 
-        vb.render(index_component(vb.user.is_some(), pushups))
+        vb.render(new_set_component(vb.user.is_some(), pushups))
     }
 
-    async fn create_first_set_response(vibe: Vibe, MaybeUser(user): MaybeUser) -> Result<Markup> {
-        let Vibe {
-            ref db, exercises, ..
-        } = vibe;
-        let pushups = db
-            .select()
-            .from(exercises)
-            .r#where(eq(exercises.name, "standard push-ups"))
-            .first::<Exercise>()
-            .await?;
-
-        Ok(index_component(user.is_some(), pushups))
+    async fn create_first_set_response(
+        vb: Vibe,
+        Json(params): Json<SetParams>,
+    ) -> Result<impl IntoResponse> {
+        vb.render(signup_form_component(params.reps))
     }
 
     #[derive(Serialize, Deserialize)]
@@ -560,40 +530,25 @@ pub mod backend {
 
     async fn login_response(
         vb: Vibe,
+        db: Database,
         Json(params): Json<LoginParams>,
     ) -> Result<impl IntoResponse> {
-        let Vibe {
-            ref db,
-            users,
-            sessions,
-            exercises,
-            ..
-        } = vb;
-        let maybe_user = db
-            .select()
-            .from(users)
-            .r#where(eq(users.secret, params.secret))
-            .first::<User>()
-            .await;
+        let maybe_user = db.user_by_secret(params.secret).await;
 
         match maybe_user {
             Ok(user) => {
-                let session = db
-                    .insert(sessions)
-                    .values(Session {
-                        id: id!(),
-                        user_id: user.id,
-                        created_at: now(),
-                    })?
-                    .returning::<Session>()
+                let session: Session = db
+                    .insert(
+                        Session {
+                            id: id!(),
+                            user_id: user.id,
+                            created_at: now(),
+                        }
+                        .into(),
+                    )
                     .await?;
 
-                let pushups = db
-                    .select()
-                    .from(exercises)
-                    .r#where(eq(exercises.name, "standard push-ups"))
-                    .first::<Exercise>()
-                    .await?;
+                let pushups = db.exercise_by_name("standard push-ups").await?;
 
                 Ok((
                     AppendHeaders([(
@@ -603,23 +558,19 @@ pub mod backend {
                             session.id
                         ),
                     )]),
-                    index_component(true, pushups),
+                    new_set_component(true, pushups),
                 )
                     .into_response())
             }
             Err(err) => match err {
-                rizz::Error::RowNotFound => Ok(vb.render(login_form_component()).into_response()),
+                Error::NotFound => Ok(vb.render(login_form_component()).into_response()),
                 _ => Err(err.into()),
             },
         }
     }
 
-    fn parse_reps_cookie(cookie: Cookie) -> Option<u16> {
-        cookie.get("reps")?.parse::<u16>().ok()
-    }
-
     async fn signup_form_response(vibe: Vibe) -> Result<impl IntoResponse> {
-        vibe.render(render_signup_form())
+        vibe.render(signup_form_component(0))
     }
 
     fn now() -> u64 {
@@ -629,56 +580,46 @@ pub mod backend {
     }
 
     async fn signup_response(
-        State(vb): State<Vibe>,
-        TypedHeader(cookie): TypedHeader<Cookie>,
+        vb: Vibe,
+        db: Database,
+        Json(params): Json<SetParams>,
     ) -> Result<impl IntoResponse> {
-        let Vibe {
-            ref db,
-            users,
-            sessions,
-            sets,
-            exercises,
-            ..
-        } = vb;
         let user: User = db
-            .insert(users)
-            .values(User {
-                id: id!(),
-                secret: id!(),
-                created_at: now(),
-            })?
-            .returning()
+            .insert(
+                User {
+                    id: id!(),
+                    secret: id!(),
+                    created_at: now(),
+                }
+                .into(),
+            )
             .await?;
 
         let session: Session = db
-            .insert(sessions)
-            .values(Session {
-                id: id!(),
-                user_id: user.id.clone(),
-                created_at: now(),
-            })?
-            .returning()
+            .insert(
+                Session {
+                    id: id!(),
+                    user_id: user.id.clone(),
+                    created_at: now(),
+                }
+                .into(),
+            )
             .await?;
 
-        let reps = parse_reps_cookie(cookie);
-        let pushups = db
-            .select()
-            .from(exercises)
-            .r#where(eq(exercises.name, "standard push-ups"))
-            .first::<Exercise>()
-            .await?;
+        let pushups = db.exercise_by_name("standard push-ups").await?;
 
-        let _set: db::Set = db
-            .insert(sets)
-            .values(db::Set {
-                id: id!(),
-                user_id: user.id.clone(),
-                exercise_id: pushups.id,
-                reps: reps.unwrap_or_default(),
-                weight: 0,
-                created_at: now(),
-            })?
-            .returning()
+        let _set = db
+            .insert::<db::Set>(
+                db::Set {
+                    id: id!(),
+                    user_id: user.id.clone(),
+                    exercise_id: pushups.id,
+                    reps: params.reps,
+                    weight: 0,
+                    created_at: now(),
+                }
+                .into(),
+            )
             .await?;
 
         Ok((
@@ -699,7 +640,7 @@ pub mod backend {
                 p class="" { "This is your secret key, don't lose it it's the only way to view your workouts!" }
                 p class="text-xl font-bold" { (user.secret) }
                 p class="text-center text-4xl" { "🎉" }
-                (rect_button(Route::SearchExercises, Swap::InnerHTML, Target::Body, "add another set"))
+                (rect_button(Route::Exercises, Swap::InnerHTML, Target::Body, "add another set"))
             }
         }
     }
@@ -719,9 +660,9 @@ pub mod backend {
     where
         T: Into<String>,
     {
-        fn maybe_response(self) -> Result<Response> {
+        fn maybe_response(self) -> Result<axum::response::Response> {
             let path: String = self.0.into();
-            let mut builder = Response::builder();
+            let mut builder = axum::response::Response::builder();
             if path.ends_with("sw.js") {
                 builder = builder.header("Service-Worker-Allowed", "/");
             }
@@ -741,10 +682,14 @@ pub mod backend {
     where
         T: Into<String>,
     {
-        fn into_response(self) -> Response {
+        fn into_response(self) -> axum::response::Response {
             self.maybe_response()
                 .unwrap_or(Error::NotFound.into_response())
         }
+    }
+
+    trait Abc {
+        async fn abc(&self);
     }
 
     impl From<rizz::Error> for Error {
@@ -758,7 +703,7 @@ pub mod backend {
     }
 
     impl IntoResponse for Error {
-        fn into_response(self) -> Response {
+        fn into_response(self) -> axum::response::Response {
             let (status, error_message) = match self {
                 Error::NotFound | Error::RowNotFound => {
                     (axum::http::StatusCode::NOT_FOUND, format!("{self}"))
@@ -776,13 +721,9 @@ pub mod backend {
 
     type MightError = std::result::Result<(), Error>;
 
-    #[derive(Clone, Debug)]
+    #[derive(FromRef, Clone)]
     struct Vibe {
         db: Database,
-        users: Users,
-        sessions: Sessions,
-        sets: Sets,
-        exercises: Exercises,
         user: Option<User>,
     }
 
@@ -808,22 +749,27 @@ pub mod backend {
         }
     }
 
-    impl Vibe {
+    impl Database {
         async fn migrate(&self) -> MightError {
-            let _ = self
-                .db
-                .create_table(self.users)
-                .create_table(self.sessions)
-                .create_table(self.exercises)
-                .create_unique_index(self.exercises, vec![self.exercises.name])
-                .create_table(self.sets)
+            let Self { db, .. } = self;
+            let Schema {
+                users,
+                sessions,
+                sets,
+                exercises,
+            } = self.schema;
+            let _ = db
+                .create_table(users)
+                .create_table(sessions)
+                .create_table(exercises)
+                .create_unique_index(exercises, vec![exercises.name])
+                .create_table(sets)
                 .migrate()
                 .await?;
 
-            let maybe_ex = self
-                .db
+            let maybe_ex = db
                 .select()
-                .from(self.exercises)
+                .from(exercises)
                 .limit(1)
                 .first::<Exercise>()
                 .await;
@@ -833,9 +779,8 @@ pub mod backend {
                     .expect("exercises.csv doesn't exist");
                 for line in rows.split("\n") {
                     let name = line.trim();
-                    let _rows = self
-                        .db
-                        .insert(self.exercises)
+                    let _rows = db
+                        .insert(exercises)
                         .values(Exercise {
                             id: id!(),
                             name: name.into(),
@@ -849,23 +794,85 @@ pub mod backend {
             Ok(())
         }
 
-        fn render(&self, children: Markup) -> Result<impl IntoResponse> {
-            Ok(html! {
-                (DOCTYPE)
-                html {
-                    (head())
-                    (body(self.user.as_ref(), children))
+        async fn insert<T: Serialize + DeserializeOwned + Sync + Send + 'static>(
+            &self,
+            record: Record,
+        ) -> Result<T> {
+            let Self { db, schema } = self;
+            let Schema {
+                sets,
+                users,
+                sessions,
+                exercises,
+            } = *schema;
+            match record {
+                Record::Set(new_set) => {
+                    let row = db.insert(sets).values(new_set)?.returning::<T>().await?;
+                    Ok(row)
                 }
-            })
+                Record::User(new_user) => {
+                    let row = db.insert(users).values(new_user)?.returning::<T>().await?;
+                    Ok(row)
+                }
+                Record::Session(new_session) => {
+                    let row = db
+                        .insert(sessions)
+                        .values(new_session)?
+                        .returning::<T>()
+                        .await?;
+                    Ok(row)
+                }
+                Record::Exercise(new_exercise) => {
+                    let row = db
+                        .insert(exercises)
+                        .values(new_exercise)?
+                        .returning::<T>()
+                        .await?;
+                    Ok(row)
+                }
+            }
+        }
+
+        fn new(db: rizz::Database) -> Self {
+            let schema = Schema {
+                users: Users::new(),
+                sessions: Sessions::new(),
+                sets: Sets::new(),
+                exercises: Exercises::new(),
+            };
+            Database { db, schema }
+        }
+
+        async fn exercise_by_name(&self, name: &str) -> Result<Exercise> {
+            let Self { db, schema } = self;
+            let Schema { exercises, .. } = *schema;
+            let row = db
+                .select()
+                .from(exercises)
+                .r#where(eq(exercises.name, name))
+                .limit(1)
+                .first()
+                .await?;
+            Ok(row)
+        }
+
+        async fn user_by_secret(&self, secret: String) -> Result<User> {
+            let Self { db, schema } = self;
+            let Schema { users, .. } = *schema;
+            let row = db
+                .select()
+                .from(users)
+                .r#where(eq(users.secret, secret))
+                .first::<User>()
+                .await?;
+            Ok(row)
         }
 
         async fn sets_for_user(&self, user: User) -> Result<Vec<Set>> {
-            let Self {
-                ref db,
-                sets,
-                exercises,
-                ..
-            } = *self;
+            let Self { db, schema } = self;
+            let Schema {
+                sets, exercises, ..
+            } = *schema;
             let sets = db
                 .select()
                 .from(sets)
@@ -896,6 +903,68 @@ pub mod backend {
                 .collect::<Vec<_>>();
 
             Ok(sets)
+        }
+
+        async fn user_by_session_id(&self, session_id: &str) -> Result<User> {
+            // TODO: this should be a transaction or a join
+            let Self { db, schema } = self;
+            let Schema {
+                users, sessions, ..
+            } = *schema;
+
+            let session = db
+                .select()
+                .from(sessions)
+                .r#where(eq(sessions.id, session_id))
+                .first::<Session>()
+                .await?;
+
+            let user = db
+                .select()
+                .from(users)
+                .r#where(eq(users.id, session.user_id))
+                .first::<User>()
+                .await?;
+
+            Ok(user)
+        }
+
+        async fn exercises(&self) -> Result<Vec<Exercise>> {
+            let Self { db, schema } = self;
+            let Schema { exercises, .. } = *schema;
+
+            let rows: Vec<Exercise> = db
+                .select()
+                .from(exercises)
+                .order(vec![asc(exercises.name)])
+                .all()
+                .await?;
+            Ok(rows)
+        }
+
+        async fn exercise_by_id(&self, exercise_id: String) -> Result<Exercise> {
+            let Self { db, schema } = self;
+            let Schema { exercises, .. } = *schema;
+
+            let row: Exercise = db
+                .select()
+                .from(exercises)
+                .r#where(eq(exercises.id, exercise_id))
+                .first()
+                .await?;
+            Ok(row)
+        }
+    }
+
+    impl Vibe {
+        fn render(&self, children: Markup) -> Result<impl IntoResponse> {
+            Ok(html! {
+                (DOCTYPE)
+                html {
+                    (head())
+                    (body(self.user.as_ref(), children))
+                }
+            })
         }
     }
 
@@ -941,32 +1010,35 @@ pub mod backend {
                 .await
                 .map_err(|_| Error::NotFound)?;
 
-            let id = cookie.get("id").ok_or(Error::NotFound)?;
+            let session_id = cookie.get("id").ok_or(Error::NotFound)?;
 
-            let State(Vibe {
-                ref db,
-                sessions,
-                users,
-                ..
-            }) = State::<Vibe>::from_request_parts(parts, state)
+            let State(Vibe { ref db, .. }) = State::<Vibe>::from_request_parts(parts, state)
                 .await
                 .map_err(|_| Error::NotFound)?;
 
-            // TODO: this should be a transaction or a join
-            let session = db
-                .select()
-                .from(sessions)
-                .r#where(eq(sessions.id, id))
-                .first::<Session>()
-                .await?;
-            let user = db
-                .select()
-                .from(users)
-                .r#where(eq(users.id, session.user_id))
-                .first::<User>()
-                .await?;
+            let user: User = db.user_by_session_id(session_id).await?;
 
             Ok(user)
+        }
+    }
+
+    #[async_trait]
+    impl<S> FromRequestParts<S> for Database
+    where
+        Vibe: FromRef<S>,
+        S: Send + Sync,
+    {
+        type Rejection = Error;
+
+        async fn from_request_parts(
+            parts: &mut axum::http::request::Parts,
+            state: &S,
+        ) -> std::result::Result<Self, Self::Rejection> {
+            let State(Vibe { db, .. }) = State::<Vibe>::from_request_parts(parts, state)
+                .await
+                .map_err(|_| Error::NotFound)?;
+
+            Ok(db)
         }
     }
 
@@ -989,6 +1061,34 @@ pub mod backend {
     ) -> Markup {
         html! {
             a class="text-indigo-500 hover:text-indigo-600 active:text-indigo-700 hover:underline" hx-get=(route) hx-target=(target) hx-swap=(swap) hx-push-url=(route) { (children) }
+        }
+    }
+
+    pub fn button_link(
+        route: Route,
+        swap: Swap,
+        target: Target,
+        children: impl std::fmt::Display,
+    ) -> Markup {
+        html! {
+            button class="text-indigo-500 hover:text-indigo-600 active:text-indigo-700 hover:underline" hx-post=(route) hx-target=(target) hx-swap=(swap) hx-push-url=(route) { (children) }
+        }
+    }
+
+    pub fn exercises_component(exs: Vec<Exercise>) -> Markup {
+        html! {
+            div class="text-2xl text-center h-screen" {
+                div class="flex flex-col gap-4 divide divide-y dark:divide-gray-700" {
+                    @for ex in exs {
+                        div class="flex gap-4" {
+                            form {
+                                input type="hidden" name="exercise_id" value=(ex.id);
+                                (button_link(Route::NewSet, Swap::InnerHTML, Target::Body, ex.name))
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -1097,6 +1197,51 @@ pub mod backend {
     }
 
     type Result<T> = std::result::Result<T, Error>;
+
+    pub enum Record {
+        Set(db::Set),
+        User(User),
+        Session(Session),
+        Exercise(Exercise),
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    struct Schema {
+        users: Users,
+        sessions: Sessions,
+        sets: Sets,
+        exercises: Exercises,
+    }
+
+    impl From<db::Set> for Record {
+        fn from(set: db::Set) -> Self {
+            Record::Set(set)
+        }
+    }
+
+    impl From<Session> for Record {
+        fn from(session: Session) -> Self {
+            Record::Session(session)
+        }
+    }
+
+    impl From<Exercise> for Record {
+        fn from(ex: Exercise) -> Self {
+            Record::Exercise(ex)
+        }
+    }
+
+    impl From<User> for Record {
+        fn from(user: User) -> Self {
+            Record::User(user)
+        }
+    }
+
+    #[derive(Clone)]
+    struct Database {
+        db: rizz::Database,
+        schema: Schema,
+    }
 }
 
 #[derive(Serialize, Deserialize, Default)]
@@ -1183,4 +1328,41 @@ pub struct Exercise {
     pub id: String,
     pub name: String,
     pub created_at: u64,
+}
+
+#[derive(Clone, Copy, Routes, Default)]
+pub enum Route {
+    #[route("/")]
+    Index,
+    #[route("/signup")]
+    Signup,
+    #[route("/create-first-set")]
+    CreateFirstSet,
+    #[route("/profile")]
+    Profile,
+    #[route("/login")]
+    Login,
+    #[route("/logout")]
+    Logout,
+    #[route("/static/*file")]
+    File,
+    #[default]
+    #[route("/404")]
+    NotFound,
+    #[route("/frontend/inc")]
+    Inc,
+    #[route("/frontend/dec")]
+    Dec,
+    #[route("/frontend/push")]
+    Push,
+    #[route("/frontend/pop")]
+    Pop,
+    #[route("/create-set")]
+    CreateSet,
+    #[route("/sets")]
+    Sets,
+    #[route("/new-set")]
+    NewSet,
+    #[route("/exercises")]
+    Exercises,
 }
