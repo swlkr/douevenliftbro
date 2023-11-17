@@ -302,15 +302,14 @@ pub mod backend {
             .database();
         let db = Database::new(db);
         let _ = db.migrate().await?;
-        let vb = Vibe { db, user: None };
 
         let addr = "127.0.0.1:9006".parse().unwrap();
         println!("Listening on localhost:9006");
-        Server::bind(&addr).serve(routes(vb)).await.unwrap();
+        Server::bind(&addr).serve(routes(db)).await.unwrap();
         Ok(())
     }
 
-    fn routes(vb: Vibe) -> IntoMakeService<Router> {
+    fn routes(db: Database) -> IntoMakeService<Router> {
         Router::new()
             .route(Route::File.into(), get(static_file_response))
             .route(Route::Index.into(), get(index_response))
@@ -333,7 +332,7 @@ pub mod backend {
             .route(Route::Profile.into(), get(profile_response))
             .route(Route::Exercises.into(), get(exercises_response))
             .layer(middleware::from_fn(csp_middleware))
-            .with_state(vb)
+            .with_state(db)
             .into_make_service()
     }
 
@@ -353,7 +352,7 @@ pub mod backend {
 
     #[axum::debug_handler]
     async fn new_set_response(
-        State(_): State<Vibe>,
+        State(_): State<Database>,
         vb: Vibe,
         _user: User,
         db: Database,
@@ -721,16 +720,15 @@ pub mod backend {
 
     type MightError = std::result::Result<(), Error>;
 
-    #[derive(FromRef, Clone)]
+    #[derive(Clone)]
     struct Vibe {
-        db: Database,
         user: Option<User>,
     }
 
     #[async_trait]
     impl<S> FromRequestParts<S> for Vibe
     where
-        Vibe: FromRef<S>,
+        Database: FromRef<S>,
         S: Send + Sync,
     {
         type Rejection = Error;
@@ -739,25 +737,30 @@ pub mod backend {
             parts: &mut axum::http::request::Parts,
             state: &S,
         ) -> std::result::Result<Self, Self::Rejection> {
-            let State(mut vibe) = State::<Vibe>::from_request_parts(parts, state)
-                .await
-                .map_err(|_| Error::NotFound)?;
-            let user = MaybeUser::from_request_parts(parts, state).await?;
-            vibe.user = user.0;
+            let user = User::from_request_parts(parts, state).await;
 
-            Ok(vibe)
+            let user = match user {
+                Ok(user) => Some(user),
+                Err(err) => match err {
+                    Error::NotFound | Error::RowNotFound => None,
+                    _ => return Err(err),
+                },
+            };
+
+            Ok(Vibe { user })
         }
     }
 
+    #[allow(unused)]
     impl Database {
         async fn migrate(&self) -> MightError {
-            let Self { db, .. } = self;
-            let Schema {
+            let Self {
+                ref db,
                 users,
                 sessions,
                 sets,
                 exercises,
-            } = self.schema;
+            } = *self;
             let _ = db
                 .create_table(users)
                 .create_table(sessions)
@@ -798,13 +801,13 @@ pub mod backend {
             &self,
             record: Record,
         ) -> Result<T> {
-            let Self { db, schema } = self;
-            let Schema {
-                sets,
+            let Self {
+                ref db,
                 users,
                 sessions,
+                sets,
                 exercises,
-            } = *schema;
+            } = *self;
             match record {
                 Record::Set(new_set) => {
                     let row = db.insert(sets).values(new_set)?.returning::<T>().await?;
@@ -834,18 +837,27 @@ pub mod backend {
         }
 
         fn new(db: rizz::Database) -> Self {
-            let schema = Schema {
-                users: Users::new(),
-                sessions: Sessions::new(),
-                sets: Sets::new(),
-                exercises: Exercises::new(),
-            };
-            Database { db, schema }
+            let users = Users::new();
+            let sessions = Sessions::new();
+            let sets = Sets::new();
+            let exercises = Exercises::new();
+            Database {
+                db,
+                users,
+                sessions,
+                sets,
+                exercises,
+            }
         }
 
         async fn exercise_by_name(&self, name: &str) -> Result<Exercise> {
-            let Self { db, schema } = self;
-            let Schema { exercises, .. } = *schema;
+            let Self {
+                ref db,
+                users,
+                sessions,
+                sets,
+                exercises,
+            } = *self;
             let row = db
                 .select()
                 .from(exercises)
@@ -857,8 +869,13 @@ pub mod backend {
         }
 
         async fn user_by_secret(&self, secret: String) -> Result<User> {
-            let Self { db, schema } = self;
-            let Schema { users, .. } = *schema;
+            let Self {
+                ref db,
+                users,
+                sessions,
+                sets,
+                exercises,
+            } = *self;
             let row = db
                 .select()
                 .from(users)
@@ -869,10 +886,13 @@ pub mod backend {
         }
 
         async fn sets_for_user(&self, user: User) -> Result<Vec<Set>> {
-            let Self { db, schema } = self;
-            let Schema {
-                sets, exercises, ..
-            } = *schema;
+            let Self {
+                ref db,
+                users,
+                sessions,
+                sets,
+                exercises,
+            } = *self;
             let sets = db
                 .select()
                 .from(sets)
@@ -907,10 +927,13 @@ pub mod backend {
 
         async fn user_by_session_id(&self, session_id: &str) -> Result<User> {
             // TODO: this should be a transaction or a join
-            let Self { db, schema } = self;
-            let Schema {
-                users, sessions, ..
-            } = *schema;
+            let Self {
+                ref db,
+                users,
+                sessions,
+                sets,
+                exercises,
+            } = *self;
 
             let session = db
                 .select()
@@ -930,8 +953,13 @@ pub mod backend {
         }
 
         async fn exercises(&self) -> Result<Vec<Exercise>> {
-            let Self { db, schema } = self;
-            let Schema { exercises, .. } = *schema;
+            let Self {
+                ref db,
+                users,
+                sessions,
+                sets,
+                exercises,
+            } = *self;
 
             let rows: Vec<Exercise> = db
                 .select()
@@ -943,8 +971,13 @@ pub mod backend {
         }
 
         async fn exercise_by_id(&self, exercise_id: String) -> Result<Exercise> {
-            let Self { db, schema } = self;
-            let Schema { exercises, .. } = *schema;
+            let Self {
+                ref db,
+                users,
+                sessions,
+                sets,
+                exercises,
+            } = *self;
 
             let row: Exercise = db
                 .select()
@@ -968,36 +1001,10 @@ pub mod backend {
         }
     }
 
-    struct MaybeUser(Option<User>);
-
-    #[async_trait]
-    impl<S> FromRequestParts<S> for MaybeUser
-    where
-        Vibe: FromRef<S>,
-        S: Send + Sync,
-    {
-        type Rejection = Error;
-
-        async fn from_request_parts(
-            parts: &mut axum::http::request::Parts,
-            state: &S,
-        ) -> std::result::Result<Self, Self::Rejection> {
-            let user = User::from_request_parts(parts, state).await;
-
-            match user {
-                Ok(user) => Ok(MaybeUser(Some(user))),
-                Err(err) => match err {
-                    Error::NotFound | Error::RowNotFound => Ok(MaybeUser(None)),
-                    _ => Err(err),
-                },
-            }
-        }
-    }
-
     #[async_trait]
     impl<S> FromRequestParts<S> for User
     where
-        Vibe: FromRef<S>,
+        Database: FromRef<S>,
         S: Send + Sync,
     {
         type Rejection = Error;
@@ -1012,7 +1019,7 @@ pub mod backend {
 
             let session_id = cookie.get("id").ok_or(Error::NotFound)?;
 
-            let State(Vibe { ref db, .. }) = State::<Vibe>::from_request_parts(parts, state)
+            let State(db) = State::<Database>::from_request_parts(parts, state)
                 .await
                 .map_err(|_| Error::NotFound)?;
 
@@ -1025,7 +1032,7 @@ pub mod backend {
     #[async_trait]
     impl<S> FromRequestParts<S> for Database
     where
-        Vibe: FromRef<S>,
+        Database: FromRef<S>,
         S: Send + Sync,
     {
         type Rejection = Error;
@@ -1034,7 +1041,7 @@ pub mod backend {
             parts: &mut axum::http::request::Parts,
             state: &S,
         ) -> std::result::Result<Self, Self::Rejection> {
-            let State(Vibe { db, .. }) = State::<Vibe>::from_request_parts(parts, state)
+            let State(db) = State::<Database>::from_request_parts(parts, state)
                 .await
                 .map_err(|_| Error::NotFound)?;
 
@@ -1205,14 +1212,6 @@ pub mod backend {
         Exercise(Exercise),
     }
 
-    #[derive(Clone, Copy, Debug)]
-    struct Schema {
-        users: Users,
-        sessions: Sessions,
-        sets: Sets,
-        exercises: Exercises,
-    }
-
     impl From<db::Set> for Record {
         fn from(set: db::Set) -> Self {
             Record::Set(set)
@@ -1240,7 +1239,10 @@ pub mod backend {
     #[derive(Clone)]
     struct Database {
         db: rizz::Database,
-        schema: Schema,
+        users: Users,
+        sessions: Sessions,
+        sets: Sets,
+        exercises: Exercises,
     }
 }
 
