@@ -10,6 +10,15 @@ fn main() {
     }
 }
 
+pub fn display_value(value: u16) -> Markup {
+    html! {
+        div id=(Target::Display) class="text-6xl" {
+            input type="hidden" name="reps" value=(value);
+            (value)
+        }
+    }
+}
+
 pub fn button(
     route: Route,
     swap: Swap,
@@ -26,15 +35,6 @@ pub fn button(
             hx-swap=(swap)
             hx-target=(target) {
             (children)
-        }
-    }
-}
-
-pub fn display_value(value: u16) -> Markup {
-    html! {
-        div id=(Target::Display) class="text-6xl" {
-            input type="hidden" name="reps" value=(value);
-            (value)
         }
     }
 }
@@ -59,53 +59,6 @@ pub fn circle_button(
     html! {
         (button(route, swap, target, "flex rounded-full p-4 border dark:border-white border-slate-600 items-center justify-center border-2 w-20 h-20", children))
     }
-}
-
-pub fn new_set_component(is_logged_in: bool, ex: Exercise) -> Markup {
-    html! {
-        form {
-            input type="hidden" name="exercise_id" value=(ex.id);
-            div class="flex flex-col gap-8 px-4 lg:px-0" {
-                div class="text-center text-2xl" {
-                    (ex.name)
-                }
-                (display("reps", 0))
-                div class="grid grid-rows-4 grid-cols-3 gap-4 mx-auto" {
-                    @for digit in 1..=9 {
-                        (PushParams { digit })
-                    }
-                    (circle_button(Route::Pop, Swap::OuterHTML, Target::Display, "del"))
-                    (PushParams { digit: 0 })
-                    @if is_logged_in {
-                        (circle_button(Route::CreateSet, Swap::InnerHTML, Target::Body, "ok"))
-                    } @else {
-                        (circle_button(Route::CreateFirstSet, Swap::InnerHTML, Target::Body, "ok"))
-                    }
-                }
-            }
-        }
-    }
-}
-
-pub fn sets_component(sets: &Vec<Set>) -> Markup {
-    html! {
-        div class="text-2xl text-center h-screen" {
-            div class="flex flex-col gap-4 divide divide-y dark:divide-gray-700" {
-                @for set in sets {
-                    div class="flex gap-4" {
-                        p { (set.name) }
-                        p { (set.reps) " reps" }
-                    }
-                }
-            }
-        }
-    }
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-struct SetParams {
-    reps: u16,
-    exercise_id: String,
 }
 
 #[derive(Deserialize)]
@@ -261,9 +214,10 @@ mod frontend {
 
 #[cfg(feature = "backend")]
 pub mod backend {
+    use std::collections::HashMap;
+
     use crate::{
-        button, db, new_set_component, sets_component, Error, Exercise, Route, Set, SetParams,
-        Swap, Target,
+        button, circle_button, db, display, Error, Exercise, PushParams, Route, Set, Swap, Target,
     };
     use axum::{
         async_trait,
@@ -278,7 +232,7 @@ pub mod backend {
         routing::{get, post, IntoMakeService},
         Json, Router, Server, TypedHeader,
     };
-    use maud::{html, Markup, DOCTYPE};
+    use maud::{html, Markup, Render, DOCTYPE};
     use rizz::{asc, desc, eq, r#in, Connection, Integer, JournalMode, Table, Text};
     use serde::{de::DeserializeOwned, Deserialize, Serialize};
 
@@ -328,7 +282,7 @@ pub mod backend {
                 get(login_form_response).post(login_response),
             )
             .route(Route::NewSet.into(), post(new_set_response))
-            .route(Route::CreateSet.into(), post(create_set_response))
+            .route(Route::CreateSet.into(), post(create_set))
             .route(Route::Profile.into(), get(profile_response))
             .route(Route::Exercises.into(), get(exercises_response))
             .layer(middleware::from_fn(csp_middleware))
@@ -350,7 +304,6 @@ pub mod backend {
         exercise_id: String,
     }
 
-    #[axum::debug_handler]
     async fn new_set_response(
         State(_): State<Database>,
         vb: Vibe,
@@ -359,16 +312,21 @@ pub mod backend {
         Json(params): Json<NewSetParams>,
     ) -> Result<impl IntoResponse> {
         let ex: Exercise = db.exercise_by_id(params.exercise_id).await?;
-        vb.render(new_set_component(true, ex))
+        vb.render(NewSetComponent {
+            exercise_id: ex.id,
+            exercise_name: ex.name,
+            reps: 0,
+            is_logged_in: true,
+        })
     }
 
-    async fn create_set_response(
+    async fn create_set(
         vb: Vibe,
         db: Database,
         user: User,
         Json(params): Json<SetParams>,
     ) -> Result<impl IntoResponse> {
-        let _set: Set = db
+        let _set: db::Set = db
             .insert(
                 db::Set {
                     id: id!(),
@@ -386,7 +344,7 @@ pub mod backend {
 
         Ok((
             AppendHeaders([("Hx-Push-Url", Route::Sets.to_string())]),
-            vb.render(sets_component(&sets)),
+            vb.render(SetsComponent { sets }),
         ))
     }
 
@@ -467,7 +425,7 @@ pub mod backend {
         }
     }
 
-    fn body(user: Option<&User>, children: Markup) -> Markup {
+    fn body(user: Option<&User>, children: impl Render) -> Markup {
         html! {
             body id="body" class="h-screen dark:bg-gray-950 dark:text-white max-w-lg mx-auto" hx-ext="json-enc" {
                 (nav(user))
@@ -478,25 +436,42 @@ pub mod backend {
 
     async fn logout_response(vb: Vibe, db: Database) -> Result<impl IntoResponse> {
         let pushups = db.exercise_by_name("standard push-ups").await?;
-
+        let new_set = NewSetComponent {
+            exercise_id: pushups.id,
+            exercise_name: pushups.name,
+            reps: 0,
+            is_logged_in: false,
+        };
         Ok((
             AppendHeaders([(
                 SET_COOKIE,
                 format!("id=; HttpOnly; Max-Age=34560000; SameSite=Strict; Secure; Path=/",),
             )]),
-            vb.render(new_set_component(false, pushups)),
+            vb.render(new_set),
         ))
     }
 
     async fn sets_response(vb: Vibe, db: Database, user: User) -> Result<impl IntoResponse> {
         let sets = db.sets_for_user(user).await?;
-        vb.render(sets_component(&sets))
+        vb.render(SetsComponent { sets })
     }
 
     async fn index_response(vb: Vibe, db: Database) -> Result<impl IntoResponse> {
-        let pushups = db.exercise_by_name("standard push-ups").await?;
+        let Exercise {
+            id: exercise_id,
+            name: exercise_name,
+            ..
+        } = db.exercise_by_name("standard push-ups").await?;
+        let is_logged_in = vb.user.is_some();
 
-        vb.render(new_set_component(vb.user.is_some(), pushups))
+        let new_set = NewSetComponent {
+            is_logged_in,
+            exercise_id,
+            exercise_name,
+            reps: 0,
+        };
+
+        vb.render(new_set)
     }
 
     async fn create_first_set_response(
@@ -548,6 +523,12 @@ pub mod backend {
                     .await?;
 
                 let pushups = db.exercise_by_name("standard push-ups").await?;
+                let new_set = NewSetComponent {
+                    exercise_id: pushups.id,
+                    exercise_name: pushups.name,
+                    reps: 0,
+                    is_logged_in: true,
+                };
 
                 Ok((
                     AppendHeaders([(
@@ -557,7 +538,7 @@ pub mod backend {
                             session.id
                         ),
                     )]),
-                    new_set_component(true, pushups),
+                    vb.render(new_set),
                 )
                     .into_response())
             }
@@ -910,16 +891,30 @@ pub mod backend {
                 .all::<Exercise>()
                 .await?;
 
+            let exs = exs
+                .into_iter()
+                .map(|ex| (ex.id, ex.name))
+                .collect::<HashMap<String, String>>();
+
             let sets: Vec<Set> = sets
                 .into_iter()
-                .map(|db::Set { reps, .. }| {
-                    let name = exs
-                        .iter()
-                        .map(|ex| ex.name.clone())
-                        .last()
-                        .unwrap_or_default();
-                    Set { name, reps }
-                })
+                .map(
+                    |db::Set {
+                         reps, exercise_id, ..
+                     }| {
+                        if let Some(name) = exs.get(&exercise_id) {
+                            Set {
+                                name: name.to_owned(),
+                                reps,
+                            }
+                        } else {
+                            Set {
+                                name: "".into(),
+                                reps,
+                            }
+                        }
+                    },
+                )
                 .collect::<Vec<_>>();
 
             Ok(sets)
@@ -990,7 +985,7 @@ pub mod backend {
     }
 
     impl Vibe {
-        fn render(&self, children: Markup) -> Result<impl IntoResponse> {
+        fn render(&self, children: impl Render) -> Result<impl IntoResponse> {
             Ok(html! {
                 (DOCTYPE)
                 html {
@@ -1243,6 +1238,74 @@ pub mod backend {
         sessions: Sessions,
         sets: Sets,
         exercises: Exercises,
+    }
+
+    struct NewSetComponent {
+        exercise_id: String,
+        exercise_name: String,
+        reps: u16,
+        is_logged_in: bool,
+    }
+
+    impl Render for NewSetComponent {
+        fn render(&self) -> Markup {
+            html! {
+                form {
+                    input type="hidden" name="exercise_id" value=(self.exercise_id);
+                    div class="flex flex-col gap-8 px-4 lg:px-0" {
+                        div class="text-center text-2xl" {
+                            (self.exercise_name)
+                        }
+                        (display("reps", self.reps))
+                        div class="grid grid-rows-4 grid-cols-3 gap-4 mx-auto" {
+                            @for digit in 1..=9 {
+                                (PushParams { digit })
+                            }
+                            (circle_button(Route::Pop, Swap::OuterHTML, Target::Display, "del"))
+                            (PushParams { digit: 0 })
+                            @if self.is_logged_in {
+                                (circle_button(Route::CreateSet, Swap::InnerHTML, Target::Body, "ok"))
+                            } @else {
+                                (circle_button(Route::CreateFirstSet, Swap::InnerHTML, Target::Body, "ok"))
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    mod response {}
+
+    mod record {}
+
+    mod data {}
+
+    pub struct SetsComponent {
+        pub sets: Vec<Set>,
+    }
+
+    impl Render for SetsComponent {
+        fn render(&self) -> Markup {
+            html! {
+                div class="text-2xl text-center h-screen" {
+                    div class="flex flex-col gap-4 divide divide-y dark:divide-gray-700" {
+                        @for set in &self.sets {
+                            div class="flex gap-4" {
+                                p { (set.name) }
+                                p { (set.reps) " reps" }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[derive(Debug, Serialize, Deserialize)]
+    struct SetParams {
+        reps: u16,
+        exercise_id: String,
     }
 }
 
