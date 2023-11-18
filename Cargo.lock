@@ -246,6 +246,7 @@ dependencies = [
 name = "enum_router"
 version = "0.1.0"
 dependencies = [
+ "axum-core",
  "enum_router_macro",
 ]
 

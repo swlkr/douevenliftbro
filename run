@@ -1,5 +1,5 @@
 #!/bin/sh
 
 cargo build --features frontend --target wasm32-unknown-unknown && \
-cp target/wasm32-unknown-unknown/release/*.wasm ./static/app.wasm && \
+cp target/wasm32-unknown-unknown/debug/*.wasm ./static/app.wasm && \
 cargo run --features backend
