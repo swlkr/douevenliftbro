@@ -1,4 +1,3 @@
-use enum_router::Routes;
 use maud::{html, Markup};
 use serde::{Deserialize, Serialize};
 
@@ -85,7 +84,7 @@ pub mod backend {
                         @for digit in 1..=9 {
                             (PushForm { digit })
                         }
-                        (circle_button(Hx::Post(&crate::Route::Pop), Swap::OuterHTML, Target::Display, "del"))
+                        (circle_button(Hx::Post(&"/frontend/pop"), Swap::OuterHTML, Target::Display, "del"))
                         (PushForm { digit: 0 })
                         @if self.user_id.is_empty() {
                             (ok_button(0))
@@ -98,35 +97,43 @@ pub mod backend {
         }
     }
 
-    async fn get_add_reps(
-        vb: Vibe,
-        db: Database,
-        user: User,
-        Path(params): Path<GetAddReps>,
-    ) -> Html {
-        let ex = db.exercise_by_id(params.exercise_id).await?;
-        let get_add_reps = GetAddReps {
-            exercise_name: ex.name,
-            exercise_id: ex.id,
-            user_id: user.id,
-            reps: params.reps,
-            digit: params.digit,
-        };
+    impl GetAddReps {
+        async fn get(vb: Vibe, db: Database, user: User, Path(path): Path<GetAddReps>) -> Html {
+            let ex = db.exercise_by_id(path.exercise_id).await?;
+            let get_add_reps = GetAddReps {
+                exercise_name: ex.name,
+                exercise_id: ex.id,
+                user_id: user.id,
+                reps: path.reps,
+                digit: path.digit,
+            };
 
-        vb.render(get_add_reps)
+            vb.render(get_add_reps)
+        }
     }
 
-    async fn post_add_reps(vb: Vibe) -> Html {
-        vb.render(html! {})
+    struct PostAddReps;
+
+    impl PostAddReps {
+        async fn post(vb: Vibe) -> Html {
+            vb.render(html! {})
+        }
     }
 
-    async fn get_profile(vibe: Vibe, user: User) -> Result<impl IntoResponse> {
-        vibe.render(profile_component(user))
+    struct Profile;
+    impl Profile {
+        async fn get(vibe: Vibe, user: User) -> Result<impl IntoResponse> {
+            vibe.render(profile_component(user))
+        }
     }
 
-    async fn get_exercises(vibe: Vibe, db: Database) -> Result<impl IntoResponse> {
-        let exercises = db.exercises().await?;
-        vibe.render(exercises_component(exercises))
+    struct ExerciseList;
+
+    impl ExerciseList {
+        async fn get(vibe: Vibe, db: Database) -> Result<impl IntoResponse> {
+            let exercises = db.exercises().await?;
+            vibe.render(exercises_component(exercises))
+        }
     }
 
     async fn create_set_form_response(
@@ -233,10 +240,10 @@ pub mod backend {
             div class="text-2xl py-4 mb-4 bg-indigo-500 text-white text-center flex justify-center gap-4 max-w-md" {
                 (nav_link(Route::Index, Swap::InnerHTML, Target::Body, "home"))
                 @if let None = user {
-                    (nav_link(Route::Signup { reps: 0 }, Swap::InnerHTML, Target::Body, "signup"))
+                    (nav_link(Route::GetSignup { reps: 0 }, Swap::InnerHTML, Target::Body, "signup"))
                 } @else {
-                    (nav_link(Route::Exercises, Swap::InnerHTML, Target::Body, "add set"))
-                    (nav_link(Route::Sets, Swap::InnerHTML, Target::Body, "sets"))
+                    (nav_link(Route::ExerciseList, Swap::InnerHTML, Target::Body, "add set"))
+                    (nav_link(Route::SetList, Swap::InnerHTML, Target::Body, "sets"))
                     (nav_button(Route::Logout, Swap::InnerHTML, Target::Body, "logout"))
                 }
             }
@@ -269,53 +276,57 @@ pub mod backend {
         path: String,
     }
 
-    async fn post_logout(vb: Vibe, user: User, db: Database) -> Result<impl IntoResponse> {
-        let pushups = db.exercise_by_name("standard push-ups").await?;
-        let new_set = EnterReps {
-            exercise_id: pushups.id,
-            exercise_name: pushups.name,
-            reps: 0,
-            user_id: user.id,
-        };
-        let headers = AppendHeaders([(SET_COOKIE, "id=")]);
-        Ok((
-            AppendHeaders([(
-                SET_COOKIE,
-                format!("id=; HttpOnly; Max-Age=34560000; SameSite=Strict; Secure; Path=/",),
-            )]),
-            vb.render(new_set),
-        ))
+    struct Logout;
+    impl Logout {
+        async fn post(vb: Vibe, user: User, db: Database) -> Result<impl IntoResponse> {
+            let pushups = db.exercise_by_name("standard push-ups").await?;
+            let new_set = EnterReps {
+                exercise_id: pushups.id,
+                exercise_name: pushups.name,
+                reps: 0,
+                user_id: user.id,
+            };
+            let headers = AppendHeaders([(SET_COOKIE, "id=")]);
+            Ok((
+                AppendHeaders([(
+                    SET_COOKIE,
+                    format!("id=; HttpOnly; Max-Age=34560000; SameSite=Strict; Secure; Path=/",),
+                )]),
+                vb.render(new_set),
+            ))
+        }
     }
 
-    async fn get_sets(vb: Vibe, db: Database, user: User) -> Result<impl IntoResponse> {
-        let set_exercises = db.sets_with_exercise_for_user(user).await?;
-        vb.render(GetSets { set_exercises })
+    struct SetList;
+
+    impl SetList {
+        async fn get(vb: Vibe, db: Database, user: User) -> Result<impl IntoResponse> {
+            let set_exercises = db.sets_with_exercise_for_user(user).await?;
+            vb.render(GetSets { set_exercises })
+        }
     }
 
-    async fn get_index(vb: Vibe, db: Database) -> Html {
-        let Exercise {
-            id: exercise_id,
-            name: exercise_name,
-            ..
-        } = db.exercise_by_name("standard push-ups").await?;
+    struct Index;
 
-        let new_set = GetAddReps {
-            digit: 0,
-            user_id: vb.user.as_ref().unwrap_or(&User::default()).id.clone(),
-            exercise_id,
-            exercise_name,
-            reps: 0,
-        };
+    impl Index {
+        async fn get(vb: Vibe, db: Database) -> Html {
+            let Exercise {
+                id: exercise_id,
+                name: exercise_name,
+                ..
+            } = db.exercise_by_name("standard push-ups").await?;
 
-        vb.render(new_set)
+            let new_set = GetAddReps {
+                digit: 0,
+                user_id: vb.user.as_ref().unwrap_or(&User::default()).id.clone(),
+                exercise_id,
+                exercise_name,
+                reps: 0,
+            };
+
+            vb.render(new_set)
+        }
     }
-
-    #[derive(Serialize, Deserialize)]
-    struct LoginParams {
-        secret: String,
-    }
-
-    struct GetLogin;
 
     impl Render for GetLogin {
         fn render(&self) -> Markup {
@@ -323,59 +334,70 @@ pub mod backend {
                 div class="flex flex-col gap-8 text-center pt-4 px-4 lg:px-0 max-w-sm mx-auto" {
                     form {
                         input type="text" name="secret";
-                        (rect_button(Hx::Get(&Route::Login), Swap::InnerHTML, Target::Body, "get back to working out"))
+                        (rect_button(Hx::Get(&Route::GetLogin), Swap::InnerHTML, Target::Body, "get back to working out"))
                     }
-                    (link(Route::Signup { reps: 0 }, Swap::InnerHTML, Target::Body, "click here to signup"))
+                    (link(Route::GetSignup { reps: 0 }, Swap::InnerHTML, Target::Body, "click here to signup"))
                 }
             }
         }
     }
 
-    async fn get_login(vb: Vibe) -> Result<impl IntoResponse> {
-        vb.render(GetLogin {})
+    struct GetLogin;
+
+    impl GetLogin {
+        async fn get(vb: Vibe) -> Result<impl IntoResponse> {
+            vb.render(Self {})
+        }
     }
 
-    async fn post_login(
-        vb: Vibe,
-        db: Database,
-        Json(params): Json<LoginParams>,
-    ) -> Result<impl IntoResponse> {
-        let maybe_user = db.user_by_secret(params.secret).await;
+    #[derive(Serialize, Deserialize)]
+    struct PostLogin {
+        secret: String,
+    }
 
-        match maybe_user {
-            Ok(user) => {
-                let session: Session = db
-                    .insert(Session {
-                        id: id!(),
-                        user_id: user.id,
-                        created_at: now(),
-                    })
-                    .await?;
+    impl PostLogin {
+        async fn post(
+            vb: Vibe,
+            db: Database,
+            Json(params): Json<Self>,
+        ) -> Result<impl IntoResponse> {
+            let maybe_user = db.user_by_secret(params.secret).await;
 
-                let pushups = db.exercise_by_name("standard push-ups").await?;
-                let new_set = EnterReps {
-                    exercise_id: pushups.id,
-                    exercise_name: pushups.name,
-                    reps: 0,
-                    user_id: "".into(),
-                };
+            match maybe_user {
+                Ok(user) => {
+                    let session: Session = db
+                        .insert(Session {
+                            id: id!(),
+                            user_id: user.id,
+                            created_at: now(),
+                        })
+                        .await?;
 
-                Ok((
-                    AppendHeaders([(
-                        SET_COOKIE,
-                        format!(
+                    let pushups = db.exercise_by_name("standard push-ups").await?;
+                    let new_set = EnterReps {
+                        exercise_id: pushups.id,
+                        exercise_name: pushups.name,
+                        reps: 0,
+                        user_id: "".into(),
+                    };
+
+                    Ok((
+                        AppendHeaders([(
+                            SET_COOKIE,
+                            format!(
                             "id={}; HttpOnly; Max-Age=34560000; SameSite=Strict; Secure; Path=/",
                             session.id
                         ),
-                    )]),
-                    vb.render(new_set),
-                )
-                    .into_response())
+                        )]),
+                        vb.render(new_set),
+                    )
+                        .into_response())
+                }
+                Err(err) => match err {
+                    Error::NotFound => Ok(vb.render(GetLogin {}).into_response()),
+                    _ => Err(err.into()),
+                },
             }
-            Err(err) => match err {
-                Error::NotFound => Ok(vb.render(GetLogin {}).into_response()),
-                _ => Err(err.into()),
-            },
         }
     }
 
@@ -384,70 +406,90 @@ pub mod backend {
         reps: u16,
     }
 
+    impl GetSignup {
+        async fn get(vb: Vibe, Path(params): Path<GetSignup>) -> Result<impl IntoResponse> {
+            vb.render(GetSignup { reps: params.reps })
+        }
+    }
+
     impl Render for GetSignup {
         fn render(&self) -> Markup {
             html! {
                 div class="flex flex-col gap-6 pt-4 px-4 lg:px-0 max-w-sm mx-auto" {
-                    (rect_button(Hx::Post(&Route::Signup { reps: self.reps }), Swap::InnerHTML, Target::Body, "track your workout right now"))
-                    (link(Route::Login, Swap::InnerHTML, Target::Body, "click here if you already have an account"))
+                    (PostSignup { reps: self.reps })
+                    (link(Route::GetLogin, Swap::InnerHTML, Target::Body, "click here if you already have an account"))
                 }
             }
         }
     }
 
-    async fn get_signup(vb: Vibe, Path(params): Path<GetSignup>) -> Result<impl IntoResponse> {
-        vb.render(GetSignup { reps: params.reps })
+    impl Render for PostSignup {
+        fn render(&self) -> Markup {
+            html! {
+                form {
+                    input type="hidden" name="reps" value=(self.reps);
+                    (rect_button(Hx::Post(&Route::PostSignup), Swap::InnerHTML, Target::Body, "track your workout right now"))
+                }
+            }
+        }
     }
 
-    async fn post_signup(
-        vb: Vibe,
-        db: Database,
-        Path(params): Path<GetSignup>,
-    ) -> Result<impl IntoResponse> {
-        // create user
-        let user: User = db
-            .insert(User {
-                id: id!(),
-                secret: id!(),
-                created_at: now(),
-            })
-            .await?;
-        let user_id = user.id.clone();
-        // create session
-        let session: Session = db
-            .insert(Session {
-                id: id!(),
-                user_id: user_id.clone(),
-                created_at: now(),
-            })
-            .await?;
-        // grab pushups
-        let ex = db.exercise_by_name("standard push-ups").await?;
-        // create set with given reps
-        let set: Set = db
-            .insert(Set {
-                id: id!(),
-                exercise_id: ex.id,
-                user_id,
-                reps: params.reps,
-                weight: 0,
-                created_at: now(),
-            })
-            .await?;
-        // list all sets for user
-        let set_exercises = db.sets_with_exercise_for_user(user).await?;
-        // render GetSets
-        // set session cookie
-        let headers = AppendHeaders([(
-            SET_COOKIE,
-            format!(
-                "id={}; HttpOnly; Max-Age=34560000; SameSite=Strict; Secure; Path=/",
-                session.id
-            ),
-        )]);
-        let body = vb.render(GetSets { set_exercises });
+    #[derive(Serialize, Deserialize)]
+    struct PostSignup {
+        reps: u16,
+    }
 
-        Ok((headers, body))
+    impl PostSignup {
+        async fn post(
+            vb: Vibe,
+            db: Database,
+            Json(params): Json<PostSignup>,
+        ) -> Result<impl IntoResponse> {
+            // create user
+            let user: User = db
+                .insert(User {
+                    id: id!(),
+                    secret: id!(),
+                    created_at: now(),
+                })
+                .await?;
+            let user_id = user.id.clone();
+            // create session
+            let session: Session = db
+                .insert(Session {
+                    id: id!(),
+                    user_id: user_id.clone(),
+                    created_at: now(),
+                })
+                .await?;
+            // grab pushups
+            let ex = db.exercise_by_name("standard push-ups").await?;
+            // create set with given reps
+            let set: Set = db
+                .insert(Set {
+                    id: id!(),
+                    exercise_id: ex.id,
+                    user_id,
+                    reps: params.reps,
+                    weight: 0,
+                    created_at: now(),
+                })
+                .await?;
+            // list all sets for user
+            let set_exercises = db.sets_with_exercise_for_user(user).await?;
+            // render GetSets
+            // set session cookie
+            let headers = AppendHeaders([(
+                SET_COOKIE,
+                format!(
+                    "id={}; HttpOnly; Max-Age=34560000; SameSite=Strict; Secure; Path=/",
+                    session.id
+                ),
+            )]);
+            let body = vb.render(GetSets { set_exercises });
+
+            Ok((headers, body))
+        }
     }
 
     fn now() -> u64 {
@@ -508,13 +550,16 @@ pub mod backend {
                 p class="" { "This is your secret key, don't lose it it's the only way to view your workouts!" }
                 p class="text-xl font-bold" { (user.secret) }
                 p class="text-center text-4xl" { "🎉" }
-                (rect_button(Hx::Get(&Route::Exercises), Swap::InnerHTML, Target::Body, "add another set"))
+                (rect_button(Hx::Get(&Route::ExerciseList), Swap::InnerHTML, Target::Body, "add another set"))
             }
         }
     }
 
-    async fn get_static_file(uri: Uri) -> impl IntoResponse {
-        StaticFile(uri.path().to_string())
+    struct File;
+    impl File {
+        async fn get(uri: Uri) -> impl IntoResponse {
+            StaticFile(uri.path().to_string())
+        }
     }
 
     #[derive(rust_embed::RustEmbed)]
@@ -993,7 +1038,7 @@ pub mod backend {
                     @for ex in exs {
                         div class="flex gap-4" {
                             (Link {
-                                route: Route::AddReps { exericse_id: ex.id },
+                                route: Route::GetAddReps { exericse_id: ex.id },
                                 swap: Swap::InnerHTML,
                                 target:Target::Body,
                                 children: ex.name
@@ -1207,27 +1252,33 @@ pub mod backend {
 
     #[derive(Routes, Serialize, Deserialize)]
     pub enum Route {
-        #[route("/", get(get_index))]
+        #[get("/")]
         Index,
-        #[route("/profile", get(get_profile))]
+        #[get("/profile")]
         Profile,
-        #[route("/login", get(get_login).post(post_login))]
-        Login,
-        #[route("/logout", post(post_logout))]
+        #[get("/login")]
+        GetLogin,
+        #[post("/login")]
+        PostLogin,
+        #[post("/logout")]
         Logout,
-        #[route("/static/*file", get(get_static_file))]
+        #[get("/static/*file")]
         File,
         // #[default]
         // #[route("/404")]
         // NotFound,
-        #[route("/sets", get(get_sets))]
-        Sets,
-        #[route("/exercises", get(get_exercises))]
-        Exercises,
-        #[route("/add-reps/:exercise_id", get(get_add_reps).post(post_add_reps))]
-        AddReps { exericse_id: String },
-        #[route("/signup/:reps", get(get_signup).post(post_signup))]
-        Signup { reps: u16 },
+        #[get("/set-list")]
+        SetList,
+        #[get("/exercise-list")]
+        ExerciseList,
+        #[get("/add-reps/:exercise_id")]
+        GetAddReps { exericse_id: String },
+        #[post("/add-reps")]
+        PostAddReps,
+        #[get("/signup/:reps")]
+        GetSignup { reps: u16 },
+        #[post("/signup")]
+        PostSignup,
     }
 
     #[derive(Serialize, Deserialize, Default)]
@@ -1315,7 +1366,7 @@ pub struct Exercise {
 fn ok_button(reps: u16) -> Markup {
     html! {
         span class="js-reps" hx-swap-oob="outerHTML:.js-reps" {
-            (circle_button(Hx::Get(&Route::Signup { reps: reps }), Swap::InnerHTML, Target::Body, "ok"))
+            (circle_button(Hx::Get(&format!("/signup/{}", reps)), Swap::InnerHTML, Target::Body, "ok"))
         }
     }
 }
@@ -1386,7 +1437,7 @@ impl maud::Render for PushForm {
         html! {
             form {
                 input type="hidden" name="digit" value=(self.digit);
-                (circle_button(Hx::Post(&Route::Push), Swap::OuterHTML, Target::Display, self.digit))
+                (circle_button(Hx::Post(&"/frontend/push"), Swap::OuterHTML, Target::Display, self.digit))
             }
         }
     }
@@ -1394,7 +1445,7 @@ impl maud::Render for PushForm {
 
 #[cfg(feature = "frontend")]
 mod frontend {
-    use crate::{display_value, html, ok_button, Markup, PushForm, Route};
+    use crate::{display_value, html, ok_button, Markup, PushForm};
     use serde::{Deserialize, Serialize};
     use std::sync::{Mutex, MutexGuard};
     static REPS: Mutex<u16> = Mutex::new(0);
@@ -1449,14 +1500,9 @@ mod frontend {
     }
 
     fn route(request: &Request) -> Markup {
-        let route = match request.path() {
-            "/frontend/push" => Route::Push,
-            "/frontend/pop" => Route::Pop,
-            _ => Route::NotFound,
-        };
-        let handler = match route {
-            Route::Push => push,
-            Route::Pop => pop,
+        let handler = match request.path() {
+            "/frontend/push" => push,
+            "/frontend/pop" => pop,
             _ => not_found,
         };
 
@@ -1541,16 +1587,4 @@ mod frontend {
     pub extern "C" fn stop() -> usize {
         0
     }
-}
-
-#[derive(Routes)]
-pub enum Route {
-    #[route("/frontend/push")]
-    Push,
-    #[route("/frontend/pop")]
-    Pop,
-    #[route("/signup/:reps")]
-    Signup { reps: u16 },
-    #[route("/404")]
-    NotFound,
 }
