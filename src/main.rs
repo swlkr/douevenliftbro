@@ -237,7 +237,7 @@ pub mod backend {
     }
 
     async fn logout(vb: Vibe) -> Result<impl IntoResponse> {
-        vb.response()
+        vb.res()
             .cookie(session_cookie(None))
             .hx_location(Route::Index)
             .render(Index())
@@ -272,8 +272,12 @@ pub mod backend {
 
     fn SetRow(set: &Set) -> Markup {
         html! {
-            li class="p-4" {
-                (set.name)
+            li class="p-4 flex justify-between" {
+                div { (set.name) }
+                div class="flex gap-2" {
+                    span { (set.reps) }
+                    span { "reps" }
+                }
             }
 
         }
@@ -353,9 +357,7 @@ pub mod backend {
     ) -> Result<impl IntoResponse> {
         let maybe_user = db.user_by_secret(&json.secret).await;
         let Ok(user) = maybe_user else {
-            return vb
-                .response()
-                .render(Login(0, json.secret, "Nope try again"));
+            return vb.res().render(Login(0, json.secret, "Nope try again"));
         };
         let session: Session = db
             .insert(Session {
@@ -366,7 +368,7 @@ pub mod backend {
             .await?;
         let sets = vec![];
 
-        vb.response()
+        vb.res()
             .cookie(session_cookie(Some(session.id)))
             .hx_location(Route::ForYou)
             .render(ForYou(&user, &sets))
@@ -422,7 +424,7 @@ pub mod backend {
         let name: String = "push ups".into();
         let route = Route::AddSet(name.clone());
 
-        vb.response()
+        vb.res()
             .cookie(session_cookie(Some(session.id)))
             .hx_location(route)
             .render(AddSet(name, Some(user), 0))
@@ -727,14 +729,7 @@ pub mod backend {
             })
         }
 
-        fn redirect_to(&self, component: impl Render, route: Route) -> Result<impl IntoResponse> {
-            let headers = AppendHeaders([(hx_location(route))]);
-            let body = self.render(component);
-
-            Ok((headers, body))
-        }
-
-        fn response(&self) -> VibeResponse {
+        fn res(&self) -> VibeResponse {
             VibeResponse::new(self.clone())
         }
     }
@@ -742,7 +737,7 @@ pub mod backend {
     #[derive(Default)]
     struct VibeResponse {
         vibe: Vibe,
-        headers: Option<Vec<(axum::http::HeaderName, axum::http::HeaderValue)>>,
+        headers: Vec<(axum::http::HeaderName, axum::http::HeaderValue)>,
     }
 
     impl VibeResponse {
@@ -757,30 +752,17 @@ pub mod backend {
             let header_value = axum::http::HeaderValue::from_str(&cookie)
                 .expect("can't set header value from str in cookie()");
             let header = (SET_COOKIE, header_value);
-            match self.headers {
-                Some(ref mut headers) => headers.push(header),
-                None => self.headers = Some(vec![header]),
-            }
+            self.headers.push(header);
             self
         }
 
         fn hx_location(mut self, route: Route) -> Self {
-            match self.headers {
-                Some(ref mut headers) => headers.push(hx_location(route)),
-                None => self.headers = Some(vec![hx_location(route)]),
-            }
+            self.headers.push(hx_location(route));
             self
         }
 
         fn render(self, component: impl Render) -> Result<impl IntoResponse> {
-            let mut builder = axum::response::Response::builder().status(200);
-            if let Some(headers) = self.headers {
-                for header in headers {
-                    builder = builder.header(header.0, header.1);
-                }
-            }
-            let response = builder.body(self.vibe.render(component).into_response())?;
-            Ok(response)
+            Ok((AppendHeaders(self.headers), self.vibe.render(component)))
         }
     }
 
@@ -1013,7 +995,9 @@ pub mod backend {
             .await?;
         let sets = db.sets_for_user(&user).await?;
 
-        vb.redirect_to(ForYou(&user, &sets), Route::ForYou)
+        vb.res()
+            .hx_location(Route::ForYou)
+            .render(ForYou(&user, &sets))
     }
 
     #[derive(Routes, Debug)]
