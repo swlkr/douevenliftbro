@@ -1,5 +1,9 @@
-use maud::{html, Markup};
+#![allow(non_snake_case)]
+
+use maud::{html, Markup, Render};
 use serde::{Deserialize, Serialize};
+
+use crate::class::CIRCLE_BUTTON;
 
 fn main() {
     #[cfg(feature = "backend")]
@@ -10,15 +14,15 @@ fn main() {
 }
 
 #[cfg(feature = "backend")]
-#[allow(unused)]
 pub mod backend {
     use crate::{
-        button, circle_button, display_value, ok_button, Error, Exercise, Hx, PushForm, Swap,
-        Target,
+        button,
+        class::{CIRCLE_BUTTON, RECT_BUTTON},
+        display_value, input_reps, Error, Hx, Push, Swap, Target,
     };
     use axum::{
         async_trait,
-        extract::{rejection::TypedHeaderRejection, FromRequestParts, Path, State},
+        extract::{rejection::TypedHeaderRejection, FromRequestParts, Path, Query},
         http::{
             header::{CACHE_CONTROL, CONTENT_SECURITY_POLICY, CONTENT_TYPE, SET_COOKIE},
             Uri,
@@ -29,12 +33,13 @@ pub mod backend {
         Json, Router, Server, TypedHeader,
     };
     use enum_router::Routes;
-    use maud::{html, Markup, PreEscaped, Render, DOCTYPE};
-    use rizz::{asc, desc, eq, r#in, Connection, Integer, JournalMode, Table, Text};
-    use serde::{de::DeserializeOwned, Deserialize, Serialize};
-    use std::{collections::HashMap, sync::OnceLock};
 
-    macro_rules! id {
+    use maud::{html, Markup, PreEscaped, Render, DOCTYPE};
+    use rizz::{desc, eq, Connection, Integer, JournalMode, Table, Text};
+    use serde::{de::DeserializeOwned, Deserialize, Serialize};
+    use std::{fmt::Display, sync::OnceLock};
+
+    macro_rules! ulid {
         () => {{
             ulid::Ulid::new().to_string()
         }};
@@ -45,8 +50,20 @@ pub mod backend {
         tracing_subscriber::fmt()
             .with_max_level(tracing::Level::INFO)
             .init();
-        let db = db().await;
+        let db = Connection::new("db.sqlite3")
+            .create_if_missing(true)
+            .journal_mode(JournalMode::Wal)
+            .foreign_keys(true)
+            .open()
+            .await
+            .expect("Could not connect to database")
+            .database();
+        let db = Database::new(db);
         let _ = db.migrate().await?;
+
+        DB.set(db).unwrap();
+        let static_file_tags = static_file_tags();
+        STATIC_FILE_TAGS.set(static_file_tags).unwrap();
 
         let addr = "127.0.0.1:9006".parse().unwrap();
         println!("Listening on localhost:9006");
@@ -56,134 +73,44 @@ pub mod backend {
 
     fn routes() -> IntoMakeService<Router> {
         Route::router()
+            .route("/static/*file", axum::routing::get(file))
             .layer(middleware::from_fn(csp_middleware))
             .into_make_service()
     }
 
-    #[derive(Serialize, Deserialize)]
-    struct GetAddReps {
-        exercise_name: String,
-        exercise_id: String,
-        user_id: String,
-        reps: u16,
-        digit: u16,
-    }
-
-    impl Render for GetAddReps {
-        fn render(&self) -> Markup {
-            html! {
-                div class="flex flex-col gap-8 px-4 lg:px-0" {
-                    div class="text-center text-2xl" {
-                        (self.exercise_name)
+    fn AddSet(name: String, user: Option<User>, reps: u16) -> Markup {
+        let route = match user {
+            Some(_) => Route::AddSetAction,
+            None => Route::Signup,
+        };
+        let target = Target::Display.selector();
+        html! {
+            div class="flex flex-col gap-8 px-4 lg:px-0" {
+                div class="border rounded-xl flex justify-between items-end p-4" {
+                    div class="text-md" { "reps" }
+                    (display_value(reps))
+                }
+                div class="grid grid-rows-4 grid-cols-3 gap-4 mx-auto" {
+                    @for digit in 1..=9 {
+                        (Push { digit })
                     }
-                    div class="border rounded-xl flex justify-between items-end p-4" {
-                        div class="text-md" { "reps" }
-                        (display_value(self.reps))
+                    button class=(CIRCLE_BUTTON) hx-post=(crate::Route::Pop) hx-swap=(Swap::OuterHTML) hx-target=(target) { "del" }
+                    (Push { digit: 0 })
+                    form {
+                        (input_reps(0, false))
+                        (hidden_input("name", &name))
+                        button class=(CIRCLE_BUTTON) hx-post=(route) hx-swap=(Swap::OuterHTML) hx-target=(Target::Body) { "ok" }
                     }
-                    div class="grid grid-rows-4 grid-cols-3 gap-4 mx-auto" {
-                        @for digit in 1..=9 {
-                            (PushForm { digit })
-                        }
-                        (circle_button(Hx::Post(&"/frontend/pop"), Swap::OuterHTML, Target::Display, "del"))
-                        (PushForm { digit: 0 })
-                        @if self.user_id.is_empty() {
-                            (ok_button(0))
-                        } @else {
-                            (ok_button(0))
-                        }
-                    }
+                }
+                div class="text-center text-2xl" {
+                    (&name)
                 }
             }
         }
     }
 
-    impl GetAddReps {
-        async fn get(vb: Vibe, db: Database, user: User, Path(path): Path<GetAddReps>) -> Html {
-            let ex = db.exercise_by_id(path.exercise_id).await?;
-            let get_add_reps = GetAddReps {
-                exercise_name: ex.name,
-                exercise_id: ex.id,
-                user_id: user.id,
-                reps: path.reps,
-                digit: path.digit,
-            };
-
-            vb.render(get_add_reps)
-        }
-    }
-
-    struct PostAddReps;
-
-    impl PostAddReps {
-        async fn post(vb: Vibe) -> Html {
-            vb.render(html! {})
-        }
-    }
-
-    struct Profile;
-    impl Profile {
-        async fn get(vibe: Vibe, user: User) -> Result<impl IntoResponse> {
-            vibe.render(profile_component(user))
-        }
-    }
-
-    struct ExerciseList;
-
-    impl ExerciseList {
-        async fn get(vibe: Vibe, db: Database) -> Result<impl IntoResponse> {
-            let exercises = db.exercises().await?;
-            vibe.render(exercises_component(exercises))
-        }
-    }
-
-    async fn create_set_form_response(
-        State(_): State<Database>,
-        vb: Vibe,
-        user: User,
-        db: Database,
-        Json(params): Json<AddSetForm>,
-    ) -> Result<impl IntoResponse> {
-        let ex: Exercise = db.exercise_by_id(params.exercise_id).await?;
-        vb.render(EnterReps {
-            exercise_id: ex.id,
-            exercise_name: ex.name,
-            reps: 0,
-            user_id: user.id,
-        })
-    }
-
-    impl From<AddSetForm> for Set {
-        fn from(value: AddSetForm) -> Self {
-            Set {
-                id: id!(),
-                user_id: "".into(),
-                reps: value.reps,
-                exercise_id: value.exercise_id.clone(),
-                weight: 0,
-                created_at: now(),
-            }
-        }
-    }
-
-    // async fn add_set_response(
-    //     vb: Vibe,
-    //     db: Database,
-    //     user: User,
-    //     Json(params): Json<AddSetForm>,
-    // ) -> Result<impl IntoResponse> {
-    //     let mut set = Set::from(params);
-    //     set.user_id = user.id.clone();
-    //     let _set: Set = db.insert(set).await?;
-    //     let sets = db.sets_for_user(user).await?;
-
-    //     Ok((
-    //         AppendHeaders([("Hx-Push-Url", Route::Sets.url())]),
-    //         vb.render(SetsComponent { sets }),
-    //     ))
-    // }
-
-    fn signup_form_component(reps: u16) -> Markup {
-        html! {}
+    async fn profile(vibe: Vibe, user: User) -> Result<impl IntoResponse> {
+        vibe.render(Profile(user))
     }
 
     async fn csp_middleware<B>(
@@ -201,7 +128,7 @@ pub mod backend {
         response
     }
 
-    fn static_files() -> Vec<Markup> {
+    fn static_file_tags() -> Vec<Markup> {
         StaticFiles::iter()
             .map(|file| file.to_string())
             .map(|path| (StaticFiles::get(&path), path))
@@ -221,11 +148,11 @@ pub mod backend {
             .collect::<Vec<_>>()
     }
 
-    fn head() -> Markup {
+    fn head(file_tags: &Vec<Markup>) -> Markup {
         html! {
             head {
-                @for static_file in static_files() {
-                    (static_file)
+                @for tag in file_tags {
+                    (tag)
                 }
                 title { "do u even lift bro?" }
                 meta content="text/html;charset=utf-8" http-equiv="Content-Type";
@@ -235,261 +162,270 @@ pub mod backend {
         }
     }
 
-    fn nav(user: Option<&User>) -> Markup {
+    fn person_square_icon() -> Markup {
         html! {
-            div class="text-2xl py-4 mb-4 bg-indigo-500 text-white text-center flex justify-center gap-4 max-w-md" {
-                (nav_link(Route::Index, Swap::InnerHTML, Target::Body, "home"))
-                @if let None = user {
-                    (nav_link(Route::GetSignup { reps: 0 }, Swap::InnerHTML, Target::Body, "signup"))
-                } @else {
-                    (nav_link(Route::ExerciseList, Swap::InnerHTML, Target::Body, "add set"))
-                    (nav_link(Route::SetList, Swap::InnerHTML, Target::Body, "sets"))
-                    (nav_button(Route::Logout, Swap::InnerHTML, Target::Body, "logout"))
-                }
+            svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" fill="currentColor" class="bi bi-person-square" viewBox="0 0 16 16" {
+              path d="M11 6a3 3 0 1 1-6 0 3 3 0 0 1 6 0z" {}
+              path d="M2 0a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V2a2 2 0 0 0-2-2H2zm12 1a1 1 0 0 1 1 1v12a1 1 0 0 1-1 1v-1c0-1-1-4-6-4s-6 3-6 4v1a1 1 0 0 1-1-1V2a1 1 0 0 1 1-1h12z" {}
             }
         }
     }
 
-    fn body(user: Option<&User>, children: impl Render) -> Markup {
+    fn house_icon() -> Markup {
         html! {
-            body id="body" class="h-screen dark:bg-gray-950 dark:text-white max-w-lg mx-auto" hx-ext="json-enc" {
-                (nav(user))
+            svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" fill="currentColor" class="bi bi-house" viewBox="0 0 16 16" {
+              path d="M8.707 1.5a1 1 0 0 0-1.414 0L.646 8.146a.5.5 0 0 0 .708.708L2 8.207V13.5A1.5 1.5 0 0 0 3.5 15h9a1.5 1.5 0 0 0 1.5-1.5V8.207l.646.647a.5.5 0 0 0 .708-.708L13 5.793V2.5a.5.5 0 0 0-.5-.5h-1a.5.5 0 0 0-.5.5v1.293L8.707 1.5ZM13 7.207V13.5a.5.5 0 0 1-.5.5h-9a.5.5 0 0 1-.5-.5V7.207l5-5 5 5Z";
+            }
+        }
+    }
+
+    fn plus_square_icon() -> Markup {
+        html! {
+            svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" fill="currentColor" class="bi bi-plus-square" viewBox="0 0 16 16" {
+              path d="M14 1a1 1 0 0 1 1 1v12a1 1 0 0 1-1 1H2a1 1 0 0 1-1-1V2a1 1 0 0 1 1-1h12zM2 0a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V2a2 2 0 0 0-2-2H2z" {}
+              path d="M8 4a.5.5 0 0 1 .5.5v3h3a.5.5 0 0 1 0 1h-3v3a.5.5 0 0 1-1 0v-3h-3a.5.5 0 0 1 0-1h3v-3A.5.5 0 0 1 8 4z" {}
+            }
+        }
+    }
+
+    fn nav(children: impl Render) -> Markup {
+        html! {
+            nav class="py-4 bg-orange-500 text-white text-center flex justify-around gap-4 fixed bottom-0 left-0 right-0 lg:top-0 lg:bottom-auto w-full lg:max-w-md lg:mx-auto" {
                 (children)
             }
         }
     }
 
-    #[allow(unused)]
-    enum SameSite {
-        Lax,
-        Strict,
-        None,
+    fn user_nav() -> Markup {
+        nav(html! {
+            (nav_link(Route::ForYou, Swap::InnerHTML, Target::Body, house_icon()))
+            (nav_link(Route::AddSet("push ups".into()), Swap::InnerHTML, Target::Body, plus_square_icon()))
+            (nav_link(Route::Profile, Swap::InnerHTML, Target::Body, person_square_icon()))
+        })
     }
 
-    struct CookieOptions {
-        name: String,
-        value: String,
-        http_only: bool,
-        max_age: u64,
-        same_site: SameSite,
-        secure: bool,
-        path: String,
+    fn anon_nav() -> Markup {
+        nav(html! {
+            (nav_link(Route::Index, Swap::InnerHTML, Target::Body, house_icon()))
+            (nav_link(Route::AddSet("push ups".into()), Swap::InnerHTML, Target::Body, plus_square_icon()))
+            form {
+                (hidden_input("reps", 0))
+                (nav_link(Route::Signup, Swap::InnerHTML, Target::Body, person_square_icon()))
+            }
+        })
     }
 
-    struct Logout;
-    impl Logout {
-        async fn post(vb: Vibe, user: User, db: Database) -> Result<impl IntoResponse> {
-            let pushups = db.exercise_by_name("standard push-ups").await?;
-            let new_set = EnterReps {
-                exercise_id: pushups.id,
-                exercise_name: pushups.name,
-                reps: 0,
-                user_id: user.id,
-            };
-            let headers = AppendHeaders([(SET_COOKIE, "id=")]);
-            Ok((
-                AppendHeaders([(
-                    SET_COOKIE,
-                    format!("id=; HttpOnly; Max-Age=34560000; SameSite=Strict; Secure; Path=/",),
-                )]),
-                vb.render(new_set),
-            ))
-        }
-    }
-
-    struct SetList;
-
-    impl SetList {
-        async fn get(vb: Vibe, db: Database, user: User) -> Result<impl IntoResponse> {
-            let set_exercises = db.sets_with_exercise_for_user(user).await?;
-            vb.render(GetSets { set_exercises })
-        }
-    }
-
-    struct Index;
-
-    impl Index {
-        async fn get(vb: Vibe, db: Database) -> Html {
-            let Exercise {
-                id: exercise_id,
-                name: exercise_name,
-                ..
-            } = db.exercise_by_name("standard push-ups").await?;
-
-            let new_set = GetAddReps {
-                digit: 0,
-                user_id: vb.user.as_ref().unwrap_or(&User::default()).id.clone(),
-                exercise_id,
-                exercise_name,
-                reps: 0,
-            };
-
-            vb.render(new_set)
-        }
-    }
-
-    impl Render for GetLogin {
-        fn render(&self) -> Markup {
-            html! {
-                div class="flex flex-col gap-8 text-center pt-4 px-4 lg:px-0 max-w-sm mx-auto" {
-                    form {
-                        input type="text" name="secret";
-                        (rect_button(Hx::Get(&Route::GetLogin), Swap::InnerHTML, Target::Body, "get back to working out"))
-                    }
-                    (link(Route::GetSignup { reps: 0 }, Swap::InnerHTML, Target::Body, "click here to signup"))
+    fn body(user: Option<&User>, children: impl Render) -> Markup {
+        html! {
+            body id="body" class="h-screen dark:bg-gray-900 dark:text-white" hx-ext="json-enc" {
+                @match user {
+                    Some(_) => (user_nav()),
+                    None => (anon_nav()),
+                }
+                main class="max-w-lg mx-auto lg:mt-16" {
+                    (children)
                 }
             }
         }
     }
 
-    struct GetLogin;
+    fn session_cookie(id: Option<String>) -> String {
+        format!(
+            "id={}; HttpOnly; Max-Age=34560000; SameSite=Strict; Secure; Path=/",
+            id.unwrap_or_default()
+        )
+    }
 
-    impl GetLogin {
-        async fn get(vb: Vibe) -> Result<impl IntoResponse> {
-            vb.render(Self {})
+    async fn logout(vb: Vibe) -> Result<impl IntoResponse> {
+        vb.response()
+            .cookie(session_cookie(None))
+            .hx_location(Route::Index)
+            .render(Index())
+    }
+
+    fn Index() -> Markup {
+        html! {
+            div class="flex flex-col gap-4 text-left p-4 lg:p-0 mx-auto max-w-md items-center justify-center h-screen" {
+                h1 class="text-8xl" { "sup bro." }
+                h1 class="text-8xl" { "u lift?" }
+                (SignupButton(0))
+            }
         }
     }
 
-    #[derive(Serialize, Deserialize)]
-    struct PostLogin {
+    async fn index(vb: Vibe) -> Result<impl IntoResponse> {
+        vb.render(Index())
+    }
+
+    fn List<T>(rows: &Vec<T>) -> Markup
+    where
+        T: Render,
+    {
+        html! {
+            ul class="divide-y dark:divide-gray-800" {
+                @for row in rows {
+                    (row)
+                }
+            }
+        }
+    }
+
+    fn SetRow(set: &Set) -> Markup {
+        html! {
+            li class="p-4" {
+                (set.name)
+            }
+
+        }
+    }
+
+    fn ForYou(_user: &User, sets: &Vec<Set>) -> Markup {
+        let rows = sets.iter().map(|s| SetRow(&s)).collect::<Vec<_>>();
+        html! {
+            @if rows.is_empty() {
+                div class="flex flex-col gap-8" {
+                    h1 class="text-4xl" { "u haven't lifted" }
+                    button class=(RECT_BUTTON) hx-get=(Route::AddSet("push ups".into())) {
+                        "starting lifting"
+                    }
+                }
+
+            } @else {
+                (List(&rows))
+            }
+        }
+    }
+
+    async fn for_you(vb: Vibe, db: Database, user: User) -> Html {
+        let sets = db.sets_for_user(&user).await?;
+        vb.render(ForYou(&user, &sets))
+    }
+
+    fn text_input(name: &str, value: impl Display, placeholder: impl Display) -> Markup {
+        html! {
+            input class="block w-full rounded-md border-0 px-2 py-4 text-gray-900 outline-0 focus:outline-0 focus:ring-0 focus-visible:outline-0 focus:outline-none placeholder:text-gray-400" name=(name) type="text" value=(value) placeholder=(placeholder);
+        }
+    }
+
+    fn hidden_input(name: &str, value: impl Display) -> Markup {
+        html! {
+            input type="hidden" name=(name) value=(value);
+        }
+    }
+
+    fn Login(reps: u16, secret: impl Display, _error: impl Display) -> Markup {
+        html! {
+            div class="flex flex-col gap-8 text-center pt-4 px-4 lg:px-0 max-w-sm mx-auto" {
+                h1 class="text-2xl lg:text-4xl dark:text-white" { "login to workout, bro" }
+                form class="flex flex-col gap-2 text-center" {
+                    (text_input("secret", &secret, "Enter your secret key"))
+                    (rect_button(Hx::Post(&Route::LoginAction), Swap::InnerHTML, Target::Body, "get back to working out"))
+                }
+                form {
+                    (hidden_input("reps", reps))
+                    (link(Route::Signup, Swap::InnerHTML, Target::Body, "click here to signup"))
+                }
+            }
+        }
+    }
+
+    async fn login(vb: Vibe) -> Result<impl IntoResponse> {
+        vb.render(Login(0, "", ""))
+    }
+
+    #[derive(Default, Serialize, Deserialize)]
+    struct Login {
         secret: String,
     }
 
-    impl PostLogin {
-        async fn post(
-            vb: Vibe,
-            db: Database,
-            Json(params): Json<Self>,
-        ) -> Result<impl IntoResponse> {
-            let maybe_user = db.user_by_secret(params.secret).await;
+    fn hx_location(value: impl Display) -> (axum::http::HeaderName, axum::http::HeaderValue) {
+        (
+            axum::http::HeaderName::from_static("hx-location"),
+            axum::http::HeaderValue::from_str(&value.to_string())
+                .expect("could not assign hx_location to HeaderValue"),
+        )
+    }
 
-            match maybe_user {
-                Ok(user) => {
-                    let session: Session = db
-                        .insert(Session {
-                            id: id!(),
-                            user_id: user.id,
-                            created_at: now(),
-                        })
-                        .await?;
+    async fn login_action(
+        vb: Vibe,
+        db: Database,
+        Json(json): Json<Login>,
+    ) -> Result<impl IntoResponse> {
+        let maybe_user = db.user_by_secret(&json.secret).await;
+        let Ok(user) = maybe_user else {
+            return vb
+                .response()
+                .render(Login(0, json.secret, "Nope try again"));
+        };
+        let session: Session = db
+            .insert(Session {
+                id: ulid!(),
+                user_id: user.id.clone(),
+                created_at: now(),
+            })
+            .await?;
+        let sets = vec![];
 
-                    let pushups = db.exercise_by_name("standard push-ups").await?;
-                    let new_set = EnterReps {
-                        exercise_id: pushups.id,
-                        exercise_name: pushups.name,
-                        reps: 0,
-                        user_id: "".into(),
-                    };
-
-                    Ok((
-                        AppendHeaders([(
-                            SET_COOKIE,
-                            format!(
-                            "id={}; HttpOnly; Max-Age=34560000; SameSite=Strict; Secure; Path=/",
-                            session.id
-                        ),
-                        )]),
-                        vb.render(new_set),
-                    )
-                        .into_response())
-                }
-                Err(err) => match err {
-                    Error::NotFound => Ok(vb.render(GetLogin {}).into_response()),
-                    _ => Err(err.into()),
-                },
-            }
-        }
+        vb.response()
+            .cookie(session_cookie(Some(session.id)))
+            .hx_location(Route::ForYou)
+            .render(ForYou(&user, &sets))
     }
 
     #[derive(Serialize, Deserialize)]
-    struct GetSignup {
-        reps: u16,
+    struct SignupQuery {
+        reps: Option<u16>,
     }
 
-    impl GetSignup {
-        async fn get(vb: Vibe, Path(params): Path<GetSignup>) -> Result<impl IntoResponse> {
-            vb.render(GetSignup { reps: params.reps })
-        }
+    async fn signup(vb: Vibe, Query(query): Query<SignupQuery>) -> Result<impl IntoResponse> {
+        vb.render(Signup(query.reps.unwrap_or_default()))
     }
 
-    impl Render for GetSignup {
-        fn render(&self) -> Markup {
-            html! {
-                div class="flex flex-col gap-6 pt-4 px-4 lg:px-0 max-w-sm mx-auto" {
-                    (PostSignup { reps: self.reps })
-                    (link(Route::GetLogin, Swap::InnerHTML, Target::Body, "click here if you already have an account"))
+    fn SignupButton(reps: u16) -> Markup {
+        html! {
+            form class="flex mx-auto" {
+                (hidden_input("reps", reps))
+                button class=(RECT_BUTTON) hx-post=(Route::SignupAction) hx-target=(Target::Body.selector()) {
+                    "start lifting bruh"
                 }
             }
         }
     }
 
-    impl Render for PostSignup {
-        fn render(&self) -> Markup {
-            html! {
-                form {
-                    input type="hidden" name="reps" value=(self.reps);
-                    (rect_button(Hx::Post(&Route::PostSignup), Swap::InnerHTML, Target::Body, "track your workout right now"))
-                }
+    fn Signup(reps: u16) -> Markup {
+        html! {
+            div class="flex flex-col justify-center gap-6 pt-4 px-4 lg:px-0 max-w-sm mx-auto text-center" {
+                h1 class="text-2xl lg:text-4xl" { "signup to workout, bro" }
+                (SignupButton(reps))
+                (link(Route::Login, Swap::InnerHTML, Target::Body, "click here if you already have an account"))
             }
         }
     }
 
-    #[derive(Serialize, Deserialize)]
-    struct PostSignup {
-        reps: u16,
-    }
+    async fn signup_action(vb: Vibe, db: Database) -> Result<impl IntoResponse> {
+        // create user
+        let user: User = db
+            .insert(User {
+                id: ulid!(),
+                secret: ulid!(),
+                created_at: now(),
+            })
+            .await?;
+        // create session
+        let session: Session = db
+            .insert(Session {
+                id: ulid!(),
+                user_id: user.id.clone(),
+                created_at: now(),
+            })
+            .await?;
+        let name: String = "push ups".into();
+        let route = Route::AddSet(name.clone());
 
-    impl PostSignup {
-        async fn post(
-            vb: Vibe,
-            db: Database,
-            Json(params): Json<PostSignup>,
-        ) -> Result<impl IntoResponse> {
-            // create user
-            let user: User = db
-                .insert(User {
-                    id: id!(),
-                    secret: id!(),
-                    created_at: now(),
-                })
-                .await?;
-            let user_id = user.id.clone();
-            // create session
-            let session: Session = db
-                .insert(Session {
-                    id: id!(),
-                    user_id: user_id.clone(),
-                    created_at: now(),
-                })
-                .await?;
-            // grab pushups
-            let ex = db.exercise_by_name("standard push-ups").await?;
-            // create set with given reps
-            let set: Set = db
-                .insert(Set {
-                    id: id!(),
-                    exercise_id: ex.id,
-                    user_id,
-                    reps: params.reps,
-                    weight: 0,
-                    created_at: now(),
-                })
-                .await?;
-            // list all sets for user
-            let set_exercises = db.sets_with_exercise_for_user(user).await?;
-            // render GetSets
-            // set session cookie
-            let headers = AppendHeaders([(
-                SET_COOKIE,
-                format!(
-                    "id={}; HttpOnly; Max-Age=34560000; SameSite=Strict; Secure; Path=/",
-                    session.id
-                ),
-            )]);
-            let body = vb.render(GetSets { set_exercises });
-
-            Ok((headers, body))
-        }
+        vb.response()
+            .cookie(session_cookie(Some(session.id)))
+            .hx_location(route)
+            .render(AddSet(name, Some(user), 0))
     }
 
     fn now() -> u64 {
@@ -498,68 +434,19 @@ pub mod backend {
         now.duration_since(UNIX_EPOCH).unwrap().as_secs()
     }
 
-    async fn signup_response(
-        vb: Vibe,
-        db: Database,
-        Json(params): Json<AddSetForm>,
-    ) -> Result<impl IntoResponse> {
-        let user: User = db
-            .insert(User {
-                id: id!(),
-                secret: id!(),
-                created_at: now(),
-            })
-            .await?;
-
-        let session: Session = db
-            .insert(Session {
-                id: id!(),
-                user_id: user.id.clone(),
-                created_at: now(),
-            })
-            .await?;
-
-        let pushups = db.exercise_by_name("standard push-ups").await?;
-
-        let _set = db
-            .insert::<Set>(Set {
-                id: id!(),
-                user_id: user.id.clone(),
-                exercise_id: pushups.id,
-                reps: params.reps,
-                weight: 0,
-                created_at: now(),
-            })
-            .await?;
-
-        Ok((
-            AppendHeaders([(
-                SET_COOKIE,
-                format!(
-                    "id={}; HttpOnly; Max-Age=34560000; SameSite=Strict; Secure; Path=/",
-                    session.id
-                ),
-            )]),
-            vb.render(profile_component(user)),
-        ))
-    }
-
-    fn profile_component(user: User) -> Markup {
+    fn Profile(user: User) -> Markup {
         html! {
-            div class="flex flex-col gap-4 pt-4 grid place-content-center h-full" {
+            div class="flex flex-col gap-4 pt-4 max-w-lg mx-auto justify-center items-center w-full h-full px-12 lg:px-0" {
                 p class="" { "This is your secret key, don't lose it it's the only way to view your workouts!" }
                 p class="text-xl font-bold" { (user.secret) }
                 p class="text-center text-4xl" { "🎉" }
-                (rect_button(Hx::Get(&Route::ExerciseList), Swap::InnerHTML, Target::Body, "add another set"))
+                (rect_button(Hx::Post(&Route::Logout), Swap::InnerHTML, Target::Body, "logout"))
             }
         }
     }
 
-    struct File;
-    impl File {
-        async fn get(uri: Uri) -> impl IntoResponse {
-            StaticFile(uri.path().to_string())
-        }
+    async fn file(uri: Uri) -> impl IntoResponse {
+        StaticFile(uri.path().to_string())
     }
 
     #[derive(rust_embed::RustEmbed)]
@@ -601,6 +488,12 @@ pub mod backend {
         }
     }
 
+    impl From<axum::http::Error> for Error {
+        fn from(value: axum::http::Error) -> Self {
+            Self::Http(value.to_string())
+        }
+    }
+
     impl From<rizz::Error> for Error {
         fn from(value: rizz::Error) -> Self {
             match value {
@@ -608,6 +501,18 @@ pub mod backend {
                 rizz::Error::Database(err) => Error::Database(err),
                 _ => Error::InternalServer,
             }
+        }
+    }
+
+    impl From<axum::Error> for Error {
+        fn from(value: axum::Error) -> Self {
+            Self::Axum(value.to_string())
+        }
+    }
+
+    impl From<std::io::Error> for Error {
+        fn from(value: std::io::Error) -> Self {
+            Self::Fs(value.to_string())
         }
     }
 
@@ -631,7 +536,7 @@ pub mod backend {
     type MightError = std::result::Result<(), Error>;
     type Html = Result<Markup>;
 
-    #[derive(Clone)]
+    #[derive(Clone, Default, Debug)]
     struct Vibe {
         user: Option<User>,
     }
@@ -649,13 +554,14 @@ pub mod backend {
         ) -> std::result::Result<Self, Self::Rejection> {
             let user = User::from_request_parts(parts, state).await;
 
-            let user = match user {
-                Ok(user) => Some(user),
-                Err(err) => match err {
-                    Error::NotFound | Error::RowNotFound => None,
-                    _ => return Err(err),
-                },
-            };
+            let user =
+                match user {
+                    Ok(user) => Some(user),
+                    Err(err) => match err {
+                        Error::NotFound | Error::RowNotFound => None,
+                        _ => return Err(err),
+                    },
+                };
 
             Ok(Vibe { user })
         }
@@ -669,43 +575,20 @@ pub mod backend {
                 users,
                 sessions,
                 sets,
-                exercises,
             } = *self;
+
             let _ = db
                 .create_table(users)
                 .create_table(sessions)
-                .create_table(exercises)
-                .create_unique_index(exercises, vec![exercises.name])
                 .create_table(sets)
                 .migrate()
                 .await?;
 
-            let maybe_ex = db
-                .select()
-                .from(exercises)
-                .limit(1)
-                .first::<Exercise>()
-                .await;
-
-            if let Err(rizz::Error::RowNotFound) = maybe_ex {
-                let rows = std::fs::read_to_string("./exercises.csv")
-                    .expect("exercises.csv doesn't exist");
-                for line in rows.split("\n") {
-                    let name = line.trim();
-                    let _rows = db
-                        .insert(exercises)
-                        .values(Exercise {
-                            id: id!(),
-                            name: name.into(),
-                            created_at: now(),
-                        })?
-                        .rows_affected()
-                        .await?;
-                }
-            }
-
             Ok(())
         }
+
+        // db.jsonl
+        // {  }
 
         async fn insert<T: Serialize + DeserializeOwned + Sync + Send + 'static>(
             &self,
@@ -716,7 +599,6 @@ pub mod backend {
                 users,
                 sessions,
                 sets,
-                exercises,
             } = *self;
             match record.into() {
                 Record::Set(new_set) => {
@@ -735,14 +617,6 @@ pub mod backend {
                         .await?;
                     Ok(row)
                 }
-                Record::Exercise(new_exercise) => {
-                    let row = db
-                        .insert(exercises)
-                        .values(new_exercise)?
-                        .returning::<T>()
-                        .await?;
-                    Ok(row)
-                }
             }
         }
 
@@ -750,41 +624,21 @@ pub mod backend {
             let users = Users::new();
             let sessions = Sessions::new();
             let sets = Sets::new();
-            let exercises = Exercises::new();
+
             Database {
                 db,
                 users,
                 sessions,
                 sets,
-                exercises,
             }
         }
 
-        async fn exercise_by_name(&self, name: &str) -> Result<Exercise> {
+        async fn user_by_secret(&self, secret: &str) -> Result<User> {
             let Self {
                 ref db,
                 users,
                 sessions,
                 sets,
-                exercises,
-            } = *self;
-            let row = db
-                .select()
-                .from(exercises)
-                .r#where(eq(exercises.name, name))
-                .limit(1)
-                .first()
-                .await?;
-            Ok(row)
-        }
-
-        async fn user_by_secret(&self, secret: String) -> Result<User> {
-            let Self {
-                ref db,
-                users,
-                sessions,
-                sets,
-                exercises,
             } = *self;
             let row = db
                 .select()
@@ -795,62 +649,6 @@ pub mod backend {
             Ok(row)
         }
 
-        async fn sets_with_exercise_for_user(&self, user: User) -> Result<Vec<SetExercise>> {
-            let Self {
-                ref db,
-                users,
-                sessions,
-                sets,
-                exercises,
-            } = *self;
-            let sets = db
-                .select()
-                .from(sets)
-                .r#where(eq(sets.user_id, user.id.clone()))
-                .limit(30)
-                .order(vec![desc(sets.created_at)])
-                .all::<Set>()
-                .await?;
-
-            /*
-                ['select * from "sets" where "sets"."user_id" = ? limit 30 order by "sets"."created_at" desc', "\"drop table rboer;"]
-            */
-            // select *
-            // from
-
-            let ids = sets.iter().map(|s| &s.exercise_id).collect::<Vec<_>>();
-            let exs = db
-                .select()
-                .from(exercises)
-                .r#where(r#in(exercises.id, ids))
-                .all::<Exercise>()
-                .await?;
-
-            let exs = exs
-                .into_iter()
-                .map(|ex| (ex.clone().id, ex))
-                .collect::<HashMap<String, Exercise>>();
-
-            let sets: Vec<SetExercise> = sets
-                .into_iter()
-                .map(|set| {
-                    if let Some(exercise) = exs.get(&set.exercise_id) {
-                        SetExercise {
-                            set,
-                            exercise: exercise.clone(),
-                        }
-                    } else {
-                        SetExercise {
-                            set,
-                            exercise: Exercise::default(),
-                        }
-                    }
-                })
-                .collect::<Vec<_>>();
-
-            Ok(sets)
-        }
-
         async fn user_by_session_id(&self, session_id: &str) -> Result<User> {
             // TODO: this should be a transaction or a join
             let Self {
@@ -858,7 +656,6 @@ pub mod backend {
                 users,
                 sessions,
                 sets,
-                exercises,
             } = *self;
 
             let session = db
@@ -878,40 +675,44 @@ pub mod backend {
             Ok(user)
         }
 
-        async fn exercises(&self) -> Result<Vec<Exercise>> {
+        async fn unique_set_names(&self, user: User) -> Result<Vec<String>> {
             let Self {
                 ref db,
                 users,
                 sessions,
                 sets,
-                exercises,
             } = *self;
 
-            let rows: Vec<Exercise> = db
+            let rows = db
                 .select()
-                .from(exercises)
-                .order(vec![asc(exercises.name)])
-                .all()
+                .from(sets)
+                .r#where(eq(sets.user_id, user.id))
+                .group_by(vec![sets.user_id, sets.name])
+                .all::<Set>()
                 .await?;
-            Ok(rows)
+
+            let names = rows.into_iter().map(|row| row.name).collect();
+
+            Ok(names)
         }
 
-        async fn exercise_by_id(&self, exercise_id: String) -> Result<Exercise> {
+        async fn sets_for_user(&self, user: &User) -> Result<Vec<Set>> {
             let Self {
                 ref db,
                 users,
                 sessions,
                 sets,
-                exercises,
             } = *self;
 
-            let row: Exercise = db
+            let rows = db
                 .select()
-                .from(exercises)
-                .r#where(eq(exercises.id, exercise_id))
-                .first()
+                .from(sets)
+                .r#where(eq(sets.user_id, &user.id))
+                .order(vec![desc(sets.created_at)])
+                .all::<Set>()
                 .await?;
-            Ok(row)
+
+            Ok(rows)
         }
     }
 
@@ -920,25 +721,74 @@ pub mod backend {
             Ok(html! {
                 (DOCTYPE)
                 html {
-                    (head())
+                    (head(STATIC_FILE_TAGS.get().unwrap()))
                     (body(self.user.as_ref(), children))
                 }
             })
         }
+
+        fn redirect_to(&self, component: impl Render, route: Route) -> Result<impl IntoResponse> {
+            let headers = AppendHeaders([(hx_location(route))]);
+            let body = self.render(component);
+
+            Ok((headers, body))
+        }
+
+        fn response(&self) -> VibeResponse {
+            VibeResponse::new(self.clone())
+        }
     }
 
-    async fn db() -> Database {
-        static DB: OnceLock<Database> = OnceLock::new();
-        let db = Connection::new("db.sqlite3")
-            .create_if_missing(true)
-            .journal_mode(JournalMode::Wal)
-            .foreign_keys(true)
-            .open()
-            .await
-            .expect("Could not connect to database")
-            .database();
+    #[derive(Default)]
+    struct VibeResponse {
+        vibe: Vibe,
+        headers: Option<Vec<(axum::http::HeaderName, axum::http::HeaderValue)>>,
+    }
 
-        DB.get_or_init(|| Database::new(db)).clone()
+    impl VibeResponse {
+        fn new(vibe: Vibe) -> Self {
+            Self {
+                vibe,
+                ..Default::default()
+            }
+        }
+
+        fn cookie(mut self, cookie: String) -> Self {
+            let header_value = axum::http::HeaderValue::from_str(&cookie)
+                .expect("can't set header value from str in cookie()");
+            let header = (SET_COOKIE, header_value);
+            match self.headers {
+                Some(ref mut headers) => headers.push(header),
+                None => self.headers = Some(vec![header]),
+            }
+            self
+        }
+
+        fn hx_location(mut self, route: Route) -> Self {
+            match self.headers {
+                Some(ref mut headers) => headers.push(hx_location(route)),
+                None => self.headers = Some(vec![hx_location(route)]),
+            }
+            self
+        }
+
+        fn render(self, component: impl Render) -> Result<impl IntoResponse> {
+            let mut builder = axum::response::Response::builder().status(200);
+            if let Some(headers) = self.headers {
+                for header in headers {
+                    builder = builder.header(header.0, header.1);
+                }
+            }
+            let response = builder.body(self.vibe.render(component).into_response())?;
+            Ok(response)
+        }
+    }
+
+    static DB: OnceLock<Database> = OnceLock::new();
+    static STATIC_FILE_TAGS: OnceLock<Vec<Markup>> = OnceLock::new();
+
+    fn db<'a>() -> &'a Database {
+        DB.get().unwrap()
     }
 
     #[async_trait]
@@ -957,7 +807,7 @@ pub mod backend {
                     .await
                     .map_err(|_| Error::NotFound)?;
             let session_id = cookie.get("id").ok_or(Error::NotFound)?;
-            let db = db().await;
+            let db = db();
             let user: User = db.user_by_session_id(session_id).await?;
 
             Ok(user)
@@ -972,12 +822,12 @@ pub mod backend {
         type Rejection = Error;
 
         async fn from_request_parts(
-            parts: &mut axum::http::request::Parts,
-            state: &S,
+            _parts: &mut axum::http::request::Parts,
+            _state: &S,
         ) -> std::result::Result<Self, Self::Rejection> {
-            let db = db().await;
+            let db = db();
 
-            Ok(db)
+            Ok(db.clone())
         }
     }
 
@@ -988,7 +838,7 @@ pub mod backend {
         children: impl std::fmt::Display,
     ) -> Markup {
         html! {
-            (button(route, swap, target, "flex rounded-md bg-indigo-500 hover:bg-indigo-600 active:bg-indigo-700 text-white p-4 items-center justify-center uppercase", children))
+            (button(route, swap, target, "flex rounded-md bg-orange-500 active:bg-orange-700 text-white p-4 items-center justify-center uppercase w-full", children))
         }
     }
 
@@ -1002,7 +852,7 @@ pub mod backend {
     impl Render for Link {
         fn render(&self) -> Markup {
             html! {
-                a class="text-indigo-500 hover:text-indigo-600 active:text-indigo-700 hover:underline" hx-get=(self.route) hx-target=(self.target) hx-swap=(self.swap) hx-push-url=(self.route) {
+                a class="text-orange-500 hover:text-orange-600 active:text-orange-700 hover:underline" hx-get=(self.route) hx-target=(self.target) hx-swap=(self.swap) hx-push-url=(self.route) {
                     (PreEscaped(self.children.clone()))
                 }
             }
@@ -1016,7 +866,7 @@ pub mod backend {
         children: impl std::fmt::Display,
     ) -> Markup {
         html! {
-            a class="text-indigo-500 hover:text-indigo-600 active:text-indigo-700 hover:underline" hx-get=(route) hx-target=(target) hx-swap=(swap) hx-push-url=(route) { (children) }
+            a class="cursor-pointer text-orange-500 hover:text-orange-600 active:text-orange-700 hover:underline" hx-get=(route) hx-target=(target) hx-swap=(swap) hx-push-url=(route) { (children) }
         }
     }
 
@@ -1027,58 +877,16 @@ pub mod backend {
         children: impl std::fmt::Display,
     ) -> Markup {
         html! {
-            button class="text-indigo-500 hover:text-indigo-600 active:text-indigo-700 hover:underline" hx-post=(route) hx-target=(target) hx-swap=(swap) hx-push-url=(route) { (children) }
+            button class="text-orange-500 hover:text-orange-600 active:text-orange-700 hover:underline" hx-post=(route) hx-target=(target) hx-swap=(swap) hx-push-url=(route) { (children) }
         }
     }
 
-    pub fn exercises_component(exs: Vec<Exercise>) -> Markup {
+    pub fn nav_link(route: Route, swap: Swap, target: Target, children: impl Render) -> Markup {
         html! {
-            div class="text-2xl text-center h-screen" {
-                div class="flex flex-col gap-4 divide divide-y dark:divide-gray-700" {
-                    @for ex in exs {
-                        div class="flex gap-4" {
-                            (Link {
-                                route: Route::GetAddReps { exericse_id: ex.id },
-                                swap: Swap::InnerHTML,
-                                target:Target::Body,
-                                children: ex.name
-                            })
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    pub fn nav_link(
-        route: Route,
-        swap: Swap,
-        target: Target,
-        children: impl std::fmt::Display,
-    ) -> Markup {
-        html! {
-            a class="hover:text-indigo-900 active:text-indigo-700 hover:underline cursor-pointer"
-            hx-get=(route)
-            hx-target=(target)
-            hx-swap=(swap)
-            hx-push-url=(route) {
-                (children)
-            }
-        }
-    }
-
-    pub fn nav_button(
-        route: Route,
-        swap: Swap,
-        target: Target,
-        children: impl std::fmt::Display,
-    ) -> Markup {
-        html! {
-            a class="hover:text-indigo-900 active:text-indigo-700 hover:underline cursor-pointer"
-            hx-post=(route)
-            hx-target=(target)
-            hx-swap=(swap)
-            hx-push-url=(route) {
+            a class="active:text-gray-900 hover:underline cursor-pointer"
+              hx-get=(route)
+              hx-target=(target)
+              hx-swap=(swap) {
                 (children)
             }
         }
@@ -1107,25 +915,14 @@ pub mod backend {
     }
 
     #[derive(Table, Clone, Copy, Debug)]
-    #[rizz(table = "exercises")]
-    pub struct Exercises {
-        #[rizz(primary_key)]
-        pub id: Text,
-        #[rizz(not_null)]
-        pub name: Text,
-        #[rizz(not_null)]
-        pub created_at: Integer,
-    }
-
-    #[derive(Table, Clone, Copy, Debug)]
     #[rizz(table = "sets")]
     pub struct Sets {
         #[rizz(primary_key)]
         pub id: Text,
         #[rizz(references = "users(id)", not_null)]
         pub user_id: Text,
-        #[rizz(references = "exercises(id)", not_null)]
-        pub exercise_id: Text,
+        #[rizz(not_null)]
+        pub name: Text,
         #[rizz(not_null)]
         pub reps: Integer,
         #[rizz(not_null)]
@@ -1141,7 +938,7 @@ pub mod backend {
         pub created_at: u64,
     }
 
-    #[derive(Default, Serialize, Deserialize)]
+    #[derive(Debug, Default, Serialize, Deserialize)]
     pub struct Session {
         pub id: String,
         pub user_id: String,
@@ -1160,7 +957,6 @@ pub mod backend {
         Set(Set),
         User(User),
         Session(Session),
-        Exercise(Exercise),
     }
 
     impl From<Set> for Record {
@@ -1172,12 +968,6 @@ pub mod backend {
     impl From<Session> for Record {
         fn from(session: Session) -> Self {
             Record::Session(session)
-        }
-    }
-
-    impl From<Exercise> for Record {
-        fn from(ex: Exercise) -> Self {
-            Record::Exercise(ex)
         }
     }
 
@@ -1193,261 +983,92 @@ pub mod backend {
         users: Users,
         sessions: Sessions,
         sets: Sets,
-        exercises: Exercises,
     }
 
-    struct EnterReps {
-        exercise_id: String,
-        exercise_name: String,
-        reps: u16,
-        user_id: String,
-    }
-
-    impl Render for EnterReps {
-        fn render(&self) -> Markup {
-            html! {}
-        }
-    }
-
-    pub struct GetSets {
-        set_exercises: Vec<SetExercise>,
-    }
-
-    impl Render for GetSets {
-        fn render(&self) -> Markup {
-            html! {
-                div class="text-2xl text-center h-screen" {
-                    div class="flex flex-col gap-4 divide divide-y dark:divide-gray-700" {
-                        @for s in &self.set_exercises {
-                            div class="flex gap-4" {
-                                p { (s.exercise.name) }
-                                p { (s.set.reps) " reps" }
-                            }
-                        }
-                    }
-                }
-            }
-        }
+    async fn add_set(vb: Vibe, _user: User, Path(name): Path<String>) -> impl IntoResponse {
+        vb.render(AddSet(name, vb.user.clone(), 0))
     }
 
     #[derive(Serialize, Deserialize)]
-    struct AddSetForm {
-        exercise_id: String,
+    struct AddSetAction {
+        name: String,
         reps: u16,
-        children: String,
     }
 
-    impl maud::Render for AddSetForm {
-        fn render(&self) -> Markup {
-            html! {
-                form {
-                    input type="hidden" name="children" value="";
-                    input class="js-reps" type="hidden" name="reps" value=(self.reps);
-                    input type="hidden" name="exercise_id" value=(self.exercise_id);
-                    (PreEscaped(self.children.clone()))
-                }
-            }
-        }
+    async fn add_set_action(
+        vb: Vibe,
+        user: User,
+        db: Database,
+        Json(json): Json<AddSetAction>,
+    ) -> Result<impl IntoResponse> {
+        let _set: Set = db
+            .insert(Set {
+                id: ulid!(),
+                user_id: user.id.clone(),
+                name: json.name,
+                reps: json.reps,
+                weight: 0,
+                created_at: now(),
+            })
+            .await?;
+        let sets = db.sets_for_user(&user).await?;
+
+        vb.redirect_to(ForYou(&user, &sets), Route::ForYou)
     }
 
-    #[derive(Routes, Serialize, Deserialize)]
+    #[derive(Routes, Debug)]
     pub enum Route {
         #[get("/")]
         Index,
-        #[get("/profile")]
-        Profile,
+
         #[get("/login")]
-        GetLogin,
+        Login,
+
         #[post("/login")]
-        PostLogin,
+        LoginAction,
+
         #[post("/logout")]
         Logout,
-        #[get("/static/*file")]
-        File,
-        // #[default]
-        // #[route("/404")]
-        // NotFound,
-        #[get("/set-list")]
-        SetList,
-        #[get("/exercise-list")]
-        ExerciseList,
-        #[get("/add-reps/:exercise_id")]
-        GetAddReps { exericse_id: String },
-        #[post("/add-reps")]
-        PostAddReps,
-        #[get("/signup/:reps")]
-        GetSignup { reps: u16 },
+
+        #[get("/signup")]
+        Signup,
+
         #[post("/signup")]
-        PostSignup,
+        SignupAction,
+
+        #[get("/for-you")]
+        ForYou,
+
+        #[get("/add-set/:name")]
+        AddSet(String),
+
+        #[post("/add-set")]
+        AddSetAction,
+
+        #[get("/profile")]
+        Profile,
     }
 
-    #[derive(Serialize, Deserialize, Default)]
+    #[derive(Debug, Serialize, Deserialize, Default)]
     pub struct Set {
         pub id: String,
         pub user_id: String,
-        pub exercise_id: String,
+        pub name: String,
         pub reps: u16,
         pub weight: u16,
         pub created_at: u64,
     }
-
-    struct SetExercise {
-        set: Set,
-        exercise: Exercise,
-    }
-}
-
-#[derive(Clone, Copy, Default)]
-pub enum Target {
-    Body,
-    Display,
-    Counter,
-    #[default]
-    This,
-}
-
-#[derive(Clone, Copy, Default)]
-pub enum Swap {
-    #[default]
-    InnerHTML,
-    OuterHTML,
-    BeforeBegin,
-    AfterBegin,
-    BeforeEnd,
-    AfterEnd,
-    Delete,
-    None,
-}
-
-impl std::fmt::Display for Swap {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(match self {
-            Swap::InnerHTML => "innerHTML",
-            Swap::OuterHTML => "outerHTML",
-            Swap::BeforeBegin => "beforebegin",
-            Swap::AfterBegin => "afterbegin",
-            Swap::BeforeEnd => "beforeend",
-            Swap::AfterEnd => "afterend",
-            Swap::Delete => "delete",
-            Swap::None => "none",
-        })
-    }
-}
-
-impl std::fmt::Display for Target {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(match self {
-            Target::Counter => "counter",
-            Target::This => "this",
-            Target::Display => "display",
-            Target::Body => "body",
-        })
-    }
 }
 
 #[allow(unused)]
-#[justerror::Error]
-#[derive(Clone)]
-pub enum Error {
-    NotFound,
-    InternalServer,
-    RowNotFound,
-    Database(String),
-    InvalidHeader(String),
-}
-
-#[derive(Default, Clone, Serialize, Deserialize)]
-pub struct Exercise {
-    pub id: String,
-    pub name: String,
-    pub created_at: u64,
-}
-
-fn ok_button(reps: u16) -> Markup {
-    html! {
-        span class="js-reps" hx-swap-oob="outerHTML:.js-reps" {
-            (circle_button(Hx::Get(&format!("/signup/{}", reps)), Swap::InnerHTML, Target::Body, "ok"))
-        }
-    }
-}
-
-pub fn display_value(reps: u16) -> Markup {
-    html! {
-        div id=(Target::Display) class="text-6xl" {
-            (reps)
-        }
-        // input class="js-reps" type="hidden" name="reps" value=(reps) hx-swap-oob="outerHTML:button[hx-post^='/signup/']";
-    }
-}
-
-pub fn button(
-    route: Hx,
-    swap: Swap,
-    target: Target,
-    class: &str,
-    children: impl std::fmt::Display,
-) -> Markup {
-    let target = format!("#{}", target);
-    let hx_post = match route {
-        Hx::Get(_) => None,
-        Hx::Post(route) => Some(route),
-    };
-
-    let hx_get = match route {
-        Hx::Get(route) => Some(route),
-        Hx::Post(_) => None,
-    };
-
-    html! {
-        button
-            class=(class)
-            hx-get=[hx_get]
-            hx-post=[hx_post]
-            hx-push-url=[hx_get]
-            hx-swap=(swap)
-            hx-target=(target) {
-            (children)
-        }
-    }
-}
-
-pub enum Hx<'a> {
-    Get(&'a dyn std::fmt::Display),
-    Post(&'a dyn std::fmt::Display),
-}
-
-pub fn circle_button(
-    route: Hx,
-    swap: Swap,
-    target: Target,
-    children: impl std::fmt::Display,
-) -> Markup {
-    html! {
-        (button(route, swap, target, "flex rounded-full p-4 border dark:border-white border-slate-600 items-center justify-center border-2 w-20 h-20", children))
-    }
-}
-
-#[derive(Deserialize)]
-struct PushForm {
-    digit: u16,
-}
-
-impl maud::Render for PushForm {
-    fn render(&self) -> Markup {
-        html! {
-            form {
-                input type="hidden" name="digit" value=(self.digit);
-                (circle_button(Hx::Post(&"/frontend/push"), Swap::OuterHTML, Target::Display, self.digit))
-            }
-        }
-    }
-}
-
 #[cfg(feature = "frontend")]
 mod frontend {
-    use crate::{display_value, html, ok_button, Markup, PushForm};
+    use crate::{
+        circle_button, display_value, html, input_reps, Hx, Markup, Push, Route, Swap, Target,
+    };
     use serde::{Deserialize, Serialize};
     use std::sync::{Mutex, MutexGuard};
+
     static REPS: Mutex<u16> = Mutex::new(0);
 
     fn push_digit(value: u16, digit: u16) -> Option<u16> {
@@ -1460,7 +1081,7 @@ mod frontend {
     }
 
     fn push(request: &Request) -> Markup {
-        let PushForm { digit } = serde_json::from_str::<PushForm>(&request.body)
+        let Push { digit } = serde_json::from_str::<Push>(&request.body)
             .expect("could not parse value from request body");
         let reps = *REPS.lock().unwrap();
         match push_digit(reps, digit) {
@@ -1468,12 +1089,12 @@ mod frontend {
                 *REPS.lock().unwrap() = new_reps;
                 html! {
                     (display_value(new_reps))
-                    (ok_button(new_reps))
+                    (input_reps(new_reps, true))
                 }
             }
             None => html! {
                 (display_value(reps))
-                (ok_button(reps))
+                (input_reps(reps, true))
             },
         }
     }
@@ -1485,12 +1106,12 @@ mod frontend {
                 *REPS.lock().unwrap() = new_reps;
                 html! {
                     (display_value(new_reps))
-                    (ok_button(reps))
+                    (input_reps(new_reps, true))
                 }
             }
             None => html! {
                 (display_value(reps))
-                (ok_button(reps))
+                (input_reps(reps, true))
             },
         }
     }
@@ -1587,4 +1208,170 @@ mod frontend {
     pub extern "C" fn stop() -> usize {
         0
     }
+}
+
+#[derive(wasm_router::Routes, Serialize, Deserialize)]
+pub enum Route {
+    #[post("/frontend/push")]
+    Push,
+    #[post("/frontend/pop")]
+    Pop,
+}
+
+pub fn circle_button(
+    route: Hx,
+    swap: Swap,
+    target: Target,
+    children: impl std::fmt::Display,
+) -> Markup {
+    html! {
+        (button(route, swap, target, CIRCLE_BUTTON, children))
+    }
+}
+#[derive(Clone, Copy, Default)]
+pub enum Target {
+    Body,
+    Display,
+    #[default]
+    This,
+}
+
+#[derive(Clone, Copy, Default)]
+pub enum Swap {
+    #[default]
+    InnerHTML,
+    OuterHTML,
+    BeforeBegin,
+    AfterBegin,
+    BeforeEnd,
+    AfterEnd,
+    Delete,
+    None,
+}
+
+impl std::fmt::Display for Swap {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Swap::InnerHTML => "innerHTML",
+            Swap::OuterHTML => "outerHTML",
+            Swap::BeforeBegin => "beforebegin",
+            Swap::AfterBegin => "afterbegin",
+            Swap::BeforeEnd => "beforeend",
+            Swap::AfterEnd => "afterend",
+            Swap::Delete => "delete",
+            Swap::None => "none",
+        })
+    }
+}
+
+impl std::fmt::Display for Target {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Target::This => "this",
+            Target::Display => "display",
+            Target::Body => "body",
+        })
+    }
+}
+
+impl Target {
+    fn selector(&self) -> String {
+        match self {
+            Target::Body => "body",
+            Target::Display => "#display",
+            Target::This => "this",
+        }
+        .into()
+    }
+}
+
+#[allow(unused)]
+#[justerror::Error]
+#[derive(Clone)]
+pub enum Error {
+    NotFound,
+    InternalServer,
+    RowNotFound,
+    Database(String),
+    InvalidHeader(String),
+    Fs(String),
+    Axum(String),
+    Http(String),
+}
+
+pub fn input_reps(reps: u16, swap_oob: bool) -> Markup {
+    let hx_swap_oob = match swap_oob {
+        true => Some("outerHTML:.js-reps"),
+        false => None,
+    };
+    html! {
+        input class="js-reps" hx-swap-oob=[hx_swap_oob] type="hidden" name="reps" value=(reps);
+    }
+}
+
+pub fn display_value(reps: u16) -> Markup {
+    html! {
+        div id=(Target::Display) class="text-6xl" {
+            (reps)
+        }
+    }
+}
+
+pub fn button(
+    route: Hx,
+    swap: Swap,
+    target: Target,
+    class: &str,
+    children: impl std::fmt::Display,
+) -> Markup {
+    let target = format!("#{}", target);
+    let hx_post = match route {
+        Hx::Get(_) => None,
+        Hx::Post(route) => Some(route),
+    };
+
+    let hx_get = match route {
+        Hx::Get(route) => Some(route),
+        Hx::Post(_) => None,
+    };
+
+    html! {
+        button
+            class=(class)
+            hx-get=[hx_get]
+            hx-post=[hx_post]
+            hx-push-url=[hx_get]
+            hx-swap=(swap)
+            hx-target=(target) {
+            (children)
+        }
+    }
+}
+
+pub enum Hx<'a> {
+    Get(&'a dyn std::fmt::Display),
+    Post(&'a dyn std::fmt::Display),
+}
+
+#[derive(Deserialize)]
+pub struct Push {
+    pub digit: u16,
+}
+
+impl Render for Push {
+    fn render(&self) -> Markup {
+        html! {
+            form {
+                input type="hidden" name="digit" value=(self.digit);
+                button class=(CIRCLE_BUTTON) hx-post=(Route::Push) hx-swap=(Swap::OuterHTML) hx-target=(Target::Display.selector()) {
+                    (self.digit)
+                }
+            }
+        }
+    }
+}
+
+pub mod class {
+    pub const RECT_BUTTON: &'static str = "flex rounded-md bg-orange-500 active:bg-orange-700 text-white p-4 items-center justify-center uppercase w-full";
+    pub const CIRCLE_BUTTON: &'static str = "flex rounded-full p-4 border dark:border-white border-slate-600 items-center justify-center border-2 w-20 h-20";
 }

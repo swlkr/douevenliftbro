@@ -240,6 +240,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "ulid",
+ "wasm_router",
 ]
 
 [[package]]
@@ -1034,6 +1035,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d0c014766411e834f7af5b8f4cf46257aab4036ca95e9d2c144a10f59ad6f5b9"
 dependencies = [
  "backtrace",
+ "bytes",
  "libc",
  "mio",
  "num_cpus",
@@ -1229,6 +1231,23 @@ name = "wasi"
 version = "0.11.0+wasi-snapshot-preview1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9c8d87e72b64a3b4db28d11ce29237c246188f4f51057d65a7eab63b7987e423"
+
+[[package]]
+name = "wasm_router"
+version = "0.1.0"
+dependencies = [
+ "wasm_router_macros",
+]
+
+[[package]]
+name = "wasm_router_macros"
+version = "0.1.0"
+dependencies = [
+ "proc-macro-error",
+ "proc-macro2",
+ "quote",
+ "syn 1.0.109",
+]
 
 [[package]]
 name = "winapi"
