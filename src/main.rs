@@ -1,9 +1,8 @@
 #![allow(non_snake_case)]
 
+use crate::class::CIRCLE_BUTTON;
 use maud::{html, Markup, Render};
 use serde::{Deserialize, Serialize};
-
-use crate::class::CIRCLE_BUTTON;
 
 fn main() {
     #[cfg(feature = "backend")]
@@ -34,6 +33,7 @@ pub mod backend {
     };
     use enum_router::Routes;
 
+    use axum::http::{HeaderName, HeaderValue};
     use maud::{html, Markup, PreEscaped, Render, DOCTYPE};
     use rizz::{desc, eq, Connection, Integer, JournalMode, Table, Text};
     use serde::{de::DeserializeOwned, Deserialize, Serialize};
@@ -80,7 +80,7 @@ pub mod backend {
 
     fn AddSet(name: String, user: Option<User>, reps: u16) -> Markup {
         let route = match user {
-            Some(_) => Route::AddSetAction,
+            Some(_) => Route::PostAddSet,
             None => Route::Signup,
         };
         let target = Target::Display.selector();
@@ -109,7 +109,7 @@ pub mod backend {
         }
     }
 
-    async fn profile(vibe: Vibe, user: User) -> Result<impl IntoResponse> {
+    async fn profile(vibe: Res, user: User) -> Result<impl IntoResponse> {
         vibe.render(Profile(user))
     }
 
@@ -229,17 +229,23 @@ pub mod backend {
         }
     }
 
-    fn session_cookie(id: Option<String>) -> String {
-        format!(
-            "id={}; HttpOnly; Max-Age=34560000; SameSite=Strict; Secure; Path=/",
-            id.unwrap_or_default()
-        )
+    fn session_cookie(id: Option<String>) -> HeaderValue {
+        let parts =
+            vec![
+                format!("id={}", id.unwrap_or_default()).as_str(),
+                "HttpOnly",
+                "Max-Age=34560000",
+                "SameSite=Strict",
+                "Secure",
+                "Path=/",
+            ]
+            .join(";");
+        HeaderValue::from_str(&format!("{}", parts)).unwrap()
     }
 
-    async fn logout(vb: Vibe) -> Result<impl IntoResponse> {
-        vb.res()
-            .cookie(session_cookie(None))
-            .hx_location(Route::Index)
+    async fn logout(res: Res) -> Result<impl IntoResponse> {
+        res.header(SET_COOKIE, session_cookie(None))
+            .header(HX_LOCATION, Route::Index)
             .render(Index())
     }
 
@@ -253,7 +259,7 @@ pub mod backend {
         }
     }
 
-    async fn index(vb: Vibe) -> Result<impl IntoResponse> {
+    async fn index(vb: Res) -> Result<impl IntoResponse> {
         vb.render(Index())
     }
 
@@ -300,9 +306,9 @@ pub mod backend {
         }
     }
 
-    async fn for_you(vb: Vibe, db: Database, user: User) -> Html {
+    async fn for_you(res: Res, db: Database, user: User) -> Result<impl IntoResponse> {
         let sets = db.sets_for_user(&user).await?;
-        vb.render(ForYou(&user, &sets))
+        res.render(ForYou(&user, &sets))
     }
 
     fn text_input(name: &str, value: impl Display, placeholder: impl Display) -> Markup {
@@ -317,13 +323,13 @@ pub mod backend {
         }
     }
 
-    fn Login(reps: u16, secret: impl Display, _error: impl Display) -> Markup {
+    fn Login(reps: u16, login: Login, _error: impl Display) -> Markup {
         html! {
             div class="flex flex-col gap-8 text-center pt-4 px-4 lg:px-0 max-w-sm mx-auto" {
                 h1 class="text-2xl lg:text-4xl dark:text-white" { "login to workout, bro" }
                 form class="flex flex-col gap-2 text-center" {
-                    (text_input("secret", &secret, "Enter your secret key"))
-                    (rect_button(Hx::Post(&Route::LoginAction), Swap::InnerHTML, Target::Body, "get back to working out"))
+                    (text_input("secret", &login.secret, "Enter your secret key"))
+                    (rect_button(Hx::Post(&Route::PostLogin), Swap::InnerHTML, Target::Body, "get back to working out"))
                 }
                 form {
                     (hidden_input("reps", reps))
@@ -333,8 +339,8 @@ pub mod backend {
         }
     }
 
-    async fn login(vb: Vibe) -> Result<impl IntoResponse> {
-        vb.render(Login(0, "", ""))
+    async fn login(vb: Res) -> Result<impl IntoResponse> {
+        vb.render(Login(0, Login::default(), ""))
     }
 
     #[derive(Default, Serialize, Deserialize)]
@@ -342,22 +348,14 @@ pub mod backend {
         secret: String,
     }
 
-    fn hx_location(value: impl Display) -> (axum::http::HeaderName, axum::http::HeaderValue) {
-        (
-            axum::http::HeaderName::from_static("hx-location"),
-            axum::http::HeaderValue::from_str(&value.to_string())
-                .expect("could not assign hx_location to HeaderValue"),
-        )
-    }
-
-    async fn login_action(
-        vb: Vibe,
+    async fn post_login(
+        res: Res,
         db: Database,
-        Json(json): Json<Login>,
+        Json(login): Json<Login>,
     ) -> Result<impl IntoResponse> {
-        let maybe_user = db.user_by_secret(&json.secret).await;
+        let maybe_user = db.user_by_secret(&login).await;
         let Ok(user) = maybe_user else {
-            return vb.res().render(Login(0, json.secret, "Nope try again"));
+            return res.render(Login(0, login, "Nope try again"));
         };
         let session: Session = db
             .insert(Session {
@@ -368,9 +366,8 @@ pub mod backend {
             .await?;
         let sets = vec![];
 
-        vb.res()
-            .cookie(session_cookie(Some(session.id)))
-            .hx_location(Route::ForYou)
+        res.header(SET_COOKIE, session_cookie(Some(session.id)))
+            .header(HX_LOCATION, Route::ForYou)
             .render(ForYou(&user, &sets))
     }
 
@@ -379,7 +376,7 @@ pub mod backend {
         reps: Option<u16>,
     }
 
-    async fn signup(vb: Vibe, Query(query): Query<SignupQuery>) -> Result<impl IntoResponse> {
+    async fn signup(vb: Res, Query(query): Query<SignupQuery>) -> Result<impl IntoResponse> {
         vb.render(Signup(query.reps.unwrap_or_default()))
     }
 
@@ -387,7 +384,7 @@ pub mod backend {
         html! {
             form class="flex mx-auto" {
                 (hidden_input("reps", reps))
-                button class=(RECT_BUTTON) hx-post=(Route::SignupAction) hx-target=(Target::Body.selector()) {
+                button class=(RECT_BUTTON) hx-post=(Route::PostSignup) hx-target=(Target::Body.selector()) {
                     "start lifting bruh"
                 }
             }
@@ -404,7 +401,7 @@ pub mod backend {
         }
     }
 
-    async fn signup_action(vb: Vibe, db: Database) -> Result<impl IntoResponse> {
+    async fn post_signup(res: Res, db: Database) -> Result<impl IntoResponse> {
         // create user
         let user: User = db
             .insert(User {
@@ -424,9 +421,8 @@ pub mod backend {
         let name: String = "push ups".into();
         let route = Route::AddSet(name.clone());
 
-        vb.res()
-            .cookie(session_cookie(Some(session.id)))
-            .hx_location(route)
+        res.header(SET_COOKIE, session_cookie(Some(session.id)))
+            .header(HX_LOCATION, route)
             .render(AddSet(name, Some(user), 0))
     }
 
@@ -536,15 +532,15 @@ pub mod backend {
     }
 
     type MightError = std::result::Result<(), Error>;
-    type Html = Result<Markup>;
 
     #[derive(Clone, Default, Debug)]
-    struct Vibe {
+    struct Res {
         user: Option<User>,
+        headers: Vec<(axum::http::HeaderName, axum::http::HeaderValue)>,
     }
 
     #[async_trait]
-    impl<S> FromRequestParts<S> for Vibe
+    impl<S> FromRequestParts<S> for Res
     where
         S: Send + Sync,
     {
@@ -565,7 +561,10 @@ pub mod backend {
                     },
                 };
 
-            Ok(Vibe { user })
+            Ok(Res {
+                user,
+                ..Default::default()
+            })
         }
     }
 
@@ -635,7 +634,7 @@ pub mod backend {
             }
         }
 
-        async fn user_by_secret(&self, secret: &str) -> Result<User> {
+        async fn user_by_secret(&self, login: &Login) -> Result<User> {
             let Self {
                 ref db,
                 users,
@@ -645,7 +644,7 @@ pub mod backend {
             let row = db
                 .select()
                 .from(users)
-                .r#where(eq(users.secret, secret))
+                .r#where(eq(users.secret, &login.secret))
                 .first::<User>()
                 .await?;
             Ok(row)
@@ -718,51 +717,22 @@ pub mod backend {
         }
     }
 
-    impl Vibe {
-        fn render(&self, children: impl Render) -> Html {
-            Ok(html! {
+    impl Res {
+        fn render(self, children: impl Render) -> Result<impl IntoResponse> {
+            let body = html! (
                 (DOCTYPE)
                 html {
                     (head(STATIC_FILE_TAGS.get().unwrap()))
                     (body(self.user.as_ref(), children))
                 }
-            })
+            );
+            let headers = AppendHeaders(self.headers);
+            Ok((headers, body))
         }
 
-        fn res(&self) -> VibeResponse {
-            VibeResponse::new(self.clone())
-        }
-    }
-
-    #[derive(Default)]
-    struct VibeResponse {
-        vibe: Vibe,
-        headers: Vec<(axum::http::HeaderName, axum::http::HeaderValue)>,
-    }
-
-    impl VibeResponse {
-        fn new(vibe: Vibe) -> Self {
-            Self {
-                vibe,
-                ..Default::default()
-            }
-        }
-
-        fn cookie(mut self, cookie: String) -> Self {
-            let header_value = axum::http::HeaderValue::from_str(&cookie)
-                .expect("can't set header value from str in cookie()");
-            let header = (SET_COOKIE, header_value);
-            self.headers.push(header);
+        fn header(mut self, name: impl Into<HeaderName>, value: impl Into<HeaderValue>) -> Self {
+            self.headers.push((name.into(), value.into()));
             self
-        }
-
-        fn hx_location(mut self, route: Route) -> Self {
-            self.headers.push(hx_location(route));
-            self
-        }
-
-        fn render(self, component: impl Render) -> Result<impl IntoResponse> {
-            Ok((AppendHeaders(self.headers), self.vibe.render(component)))
         }
     }
 
@@ -967,8 +937,8 @@ pub mod backend {
         sets: Sets,
     }
 
-    async fn add_set(vb: Vibe, _user: User, Path(name): Path<String>) -> impl IntoResponse {
-        vb.render(AddSet(name, vb.user.clone(), 0))
+    async fn add_set(res: Res, user: User, Path(name): Path<String>) -> impl IntoResponse {
+        res.render(AddSet(name, Some(user), 0))
     }
 
     #[derive(Serialize, Deserialize)]
@@ -977,8 +947,10 @@ pub mod backend {
         reps: u16,
     }
 
-    async fn add_set_action(
-        vb: Vibe,
+    const HX_LOCATION: HeaderName = HeaderName::from_static("hx-location");
+
+    async fn post_add_set(
+        res: Res,
         user: User,
         db: Database,
         Json(json): Json<AddSetAction>,
@@ -995,9 +967,14 @@ pub mod backend {
             .await?;
         let sets = db.sets_for_user(&user).await?;
 
-        vb.res()
-            .hx_location(Route::ForYou)
+        res.header(HX_LOCATION, Route::ForYou)
             .render(ForYou(&user, &sets))
+    }
+
+    impl From<Route> for HeaderValue {
+        fn from(value: Route) -> Self {
+            HeaderValue::from_str(&value.to_string()).unwrap_or(HeaderValue::from_static(""))
+        }
     }
 
     #[derive(Routes, Debug)]
@@ -1009,7 +986,7 @@ pub mod backend {
         Login,
 
         #[post("/login")]
-        LoginAction,
+        PostLogin,
 
         #[post("/logout")]
         Logout,
@@ -1018,7 +995,7 @@ pub mod backend {
         Signup,
 
         #[post("/signup")]
-        SignupAction,
+        PostSignup,
 
         #[get("/for-you")]
         ForYou,
@@ -1027,7 +1004,7 @@ pub mod backend {
         AddSet(String),
 
         #[post("/add-set")]
-        AddSetAction,
+        PostAddSet,
 
         #[get("/profile")]
         Profile,
